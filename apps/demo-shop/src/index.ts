@@ -8,6 +8,7 @@ import { Traffic, type TrafficOptions } from './traffic.ts';
 export { createShopDb, SCHEMA_SQL } from './db.ts';
 export { Shop } from './shop.ts';
 export { Traffic } from './traffic.ts';
+export { cloneDb, runTrial, type SandboxOptions, type TrialResult } from './sandbox.ts';
 
 export interface ShopServerOptions {
   httpPort?: number;

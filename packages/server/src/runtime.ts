@@ -19,6 +19,13 @@ import {
   riskAllowed,
   verifyGrammar,
   chooseAnomaly,
+  learnModel,
+  sanitizeHypothesis,
+  simulateAsync,
+  suggestHypotheses,
+  type Hypothesis,
+  type SimulationResult,
+  type SystemModel,
   type ActionRecord,
   type AffordanceOption,
   type AssetManifest,
@@ -466,6 +473,29 @@ export class IsomorphRuntime extends EventEmitter {
     this.emit('actions', this.actions);
     void this.tick();
     return record;
+  }
+
+  private modelCache: { at: number; model: SystemModel } | null = null;
+
+  /** 가설 실험실: 이벤트 기록에서 시스템 동역학을 배우고 의미 있는 가설을 제안한다 */
+  lab(): { model: SystemModel; hypotheses: Hypothesis[] } {
+    const range = this.store.range();
+    if (!range || !this.lastSnapshot) throw new Error('아직 관측 기록이 없습니다');
+    if (!this.modelCache || range.end - this.modelCache.at > 5000) {
+      const initial = this.store.snapshotAt(range.start, this.schema)!;
+      this.modelCache = { at: range.end, model: learnModel(initial, this.store.eventsBetween(range.start, range.end), this.schema) };
+    }
+    const entities = this.world?.entities ?? [];
+    const labelOf = (collection: string, pk: string | number) => entities.find((e) => e.source.collection === collection && String(e.source.pk) === String(pk))?.label ?? `${collection} #${pk}`;
+    return { model: this.modelCache.model, hypotheses: suggestHypotheses(this.modelCache.model, this.lastSnapshot, this.schema, labelOf) };
+  }
+
+  /** 현재 상태에서 가설을 시뮬레이션한다(예측이며 실제 시스템은 바꾸지 않는다) */
+  async simulate(input: Hypothesis, onProgress?: (done: number, total: number) => void): Promise<SimulationResult> {
+    const { model } = this.lab();
+    const h = sanitizeHypothesis(input, this.schema);
+    const frameMs = Math.max(250, Math.round(h.horizonMs / 80));
+    return simulateAsync(this.lastSnapshot!, model, h, this.grammar, this.schema, { runs: 80, frameMs, onProgress });
   }
 
   setInvariantStatus(id: string, status: 'confirmed' | 'dismissed') {

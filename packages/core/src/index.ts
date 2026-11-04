@@ -11,3 +11,5 @@ export * from './diff.ts';
 export * from './diagnose.ts';
 export * from './legend.ts';
 export * from './protocol.ts';
+export * from './model.ts';
+export * from './simulate.ts';

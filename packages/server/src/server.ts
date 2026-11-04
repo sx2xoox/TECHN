@@ -186,6 +186,16 @@ export async function serve(runtime: IsomorphRuntime, opts: ServeOptions = {}) {
           case 'invariant':
             runtime.setInvariantStatus(msg.id, msg.status);
             break;
+          case 'lab': {
+            const lab = runtime.lab();
+            send(c, { type: 'lab', model: lab.model, hypotheses: lab.hypotheses });
+            break;
+          }
+          case 'simulate': {
+            const result = await runtime.simulate(msg.hypothesis, (done, total) => send(c, { type: 'simulation-progress', hypothesisId: msg.hypothesis.id, done, total }));
+            send(c, { type: 'simulation', result });
+            break;
+          }
         }
       } catch (e) {
         send(c, { type: 'toast', level: 'error', message: e instanceof Error ? e.message : String(e) });

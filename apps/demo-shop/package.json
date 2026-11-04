@@ -3,9 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "exports": { ".": "./src/index.ts" },
+  "exports": {
+    ".": "./src/index.ts"
+  },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.15",
-    "@electric-sql/pglite-socket": "^0.2.18"
+    "@electric-sql/pglite-socket": "^0.2.18",
+    "@isomorph/core": "*"
   }
 }

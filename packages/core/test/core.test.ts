@@ -18,7 +18,11 @@ import {
   put,
   snapshotArbitrary,
   verifyGrammar,
+  simulate,
+  suggestHypotheses,
   type ChangeEvent,
+  type Hypothesis,
+  type SystemModel,
   type WorldGrammar,
 } from '../src/index.ts';
 import { NOW, shopGrammar, shopSchema, shopSnapshot } from './fixtures.ts';
@@ -246,5 +250,59 @@ describe('cause analysis anchoring', () => {
     const causes = findCauses(v, events, shopSchema, 20_000, undefined, inv);
     expect(causes.map((c) => c.summary)).not.toContain('active: true → false');
     expect(diagnose(v, inv, causes).pattern).toBe('race');
+  });
+});
+
+describe('hypothesis simulator', () => {
+  const model: SystemModel = {
+    learnedFrom: { events: 100, spanMs: 60_000, start: NOW - 60_000, end: NOW },
+    rates: [{ collection: 'orders', perMinute: 0, samples: 50, targets: { product_id: { '1': 1 }, customer_id: { '1': 1 } }, template: { id: 0, customer_id: 1, product_id: 1, quantity: 1, status: 'pending', created_at: '', updated_at: '' } }],
+    initialStatus: [{ collection: 'orders', field: 'status', value: 'pending' }],
+    transitions: [{ collection: 'orders', field: 'status', from: 'pending', to: 'paid', prob: 1, dwellMs: 500, samples: 50 }],
+    effects: [{ source: 'orders', refField: 'product_id', target: 'products', field: 'stock', delta: -1, onStatus: { field: 'status', value: 'paid' }, lagMs: 500, samples: 50 }],
+    gates: [{ source: 'orders', refField: 'product_id', target: 'products', field: 'stock', when: { op: '<=', value: 0 }, outcome: { field: 'status', value: 'failed' }, prob: 1, samples: 10 }],
+    replenish: [],
+    frozen: [],
+    rules: [],
+  };
+  const flash = (atomic: boolean): Hypothesis => ({
+    id: 'f',
+    title: 'flash',
+    description: '',
+    horizonMs: 5000,
+    changes: [
+      { kind: 'set', collection: 'products', pk: 1, patch: { stock: 2 } },
+      { kind: 'burst', collection: 'orders', refField: 'product_id', target: 1, count: 4, atMs: 1000, spreadMs: 30 },
+      ...(atomic ? [{ kind: 'atomic' as const, target: 'products', field: 'stock' }] : []),
+    ],
+  });
+
+  it('reproduces the check-then-act race and shows that an atomic fix removes it', () => {
+    const base = shopSnapshot({ stock: 7 });
+    const racy = simulate(base, model, flash(false), shopGrammar, shopSchema, { runs: 20 });
+    const law = racy.laws.find((l) => l.invariantId === 'stock_nonneg')!;
+    expect(law.probability).toBe(1);
+    expect(law.medianFirstMs).toBeGreaterThanOrEqual(1000);
+    const last = racy.frames.at(-1)!.world.entities.find((e) => e.id === 'warehouse:1')!;
+    expect(last.anomalies.map((a) => a.kind)).toContain('ghost');
+    const fixed = simulate(base, model, flash(true), shopGrammar, shopSchema, { runs: 20 });
+    expect(fixed.laws.find((l) => l.invariantId === 'stock_nonneg')!.probability).toBe(0);
+  });
+
+  it('is deterministic for a seed and ignores violations that already existed', () => {
+    const base = shopSnapshot({ stock: -3 });
+    const a = simulate(base, model, flash(false), shopGrammar, shopSchema, { runs: 5, seed: 1 });
+    const b = simulate(base, model, flash(false), shopGrammar, shopSchema, { runs: 5, seed: 1 });
+    expect(JSON.stringify(a.laws)).toBe(JSON.stringify(b.laws));
+    // 가설이 손대지 않으면, 처음부터 음수였던 상품 1 은 '이미 깨짐'이지 이 가설의 결과가 아니다
+    const idle = simulate(base, model, { id: 'idle', title: 'idle', description: '', horizonMs: 3000, changes: [] }, shopGrammar, shopSchema, { runs: 3 });
+    const law = idle.laws.find((l) => l.invariantId === 'stock_nonneg')!;
+    expect(law.preExisting).toBe(1);
+    expect(law.probability).toBe(0);
+  });
+
+  it('suggests hypotheses from the learned rules', () => {
+    const hs = suggestHypotheses({ ...model, rates: [{ ...model.rates[0], perMinute: 60 }] }, shopSnapshot(), shopSchema);
+    expect(hs.map((h) => h.id)).toEqual(expect.arrayContaining(['baseline', 'traffic3_orders', 'flash_products_1', 'flash_fixed_products_1']));
   });
 });

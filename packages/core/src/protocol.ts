@@ -1,4 +1,6 @@
 import type { CauseEvent, Diagnosis } from './diagnose.ts';
+import type { SystemModel } from './model.ts';
+import type { Hypothesis, SimulationResult } from './simulate.ts';
 import type { Affordance, ChannelName, WorldGrammar } from './grammar.ts';
 import type { LegendEntry } from './legend.ts';
 import type { UpdateCommand } from './lens.ts';
@@ -147,7 +149,29 @@ export interface ToastMessage {
   message: string;
 }
 
+/** 가설 실험실: 학습한 규칙 + 제안 가설 */
+export interface LabMessage {
+  type: 'lab';
+  model: SystemModel;
+  hypotheses: Hypothesis[];
+}
+
+export interface SimulationProgressMessage {
+  type: 'simulation-progress';
+  hypothesisId: string;
+  done: number;
+  total: number;
+}
+
+export interface SimulationMessage {
+  type: 'simulation';
+  result: SimulationResult;
+}
+
 export type ServerMessage =
+  | LabMessage
+  | SimulationProgressMessage
+  | SimulationMessage
   | HelloMessage
   | WorldMessage
   | TimelineMessage
@@ -165,4 +189,6 @@ export type ClientMessage =
   | { type: 'undo'; actionId: string }
   | { type: 'seek'; ts: number }
   | { type: 'live' }
-  | { type: 'invariant'; id: string; status: 'confirmed' | 'dismissed' };
+  | { type: 'invariant'; id: string; status: 'confirmed' | 'dismissed' }
+  | { type: 'lab' }
+  | { type: 'simulate'; hypothesis: Hypothesis };
