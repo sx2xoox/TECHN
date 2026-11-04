@@ -1,4 +1,5 @@
 import type { ChangeEvent } from './diff.ts';
+import { evalExpr, type EvalContext } from './expr.ts';
 import type { Invariant } from './grammar.ts';
 import type { Pk, Row, SystemSchema } from './schema.ts';
 import type { Violation } from './world.ts';
@@ -59,15 +60,30 @@ function brief(row: Row | null): string {
     .join(' ');
 }
 
-export function findCauses(v: Violation, events: ChangeEvent[], schema: SystemSchema, windowMs = 20_000, rowNow?: Row): CauseEvent[] {
+const ROW_LOCAL = new Set(['cmp', 'cmpField', 'in', 'notNull', 'and', 'or', 'not', 'implies']);
+const NO_CTX: EvalContext = { valuesOf: () => new Set(), countOf: () => 0 };
+
+/**
+ * 위반이 '시작된' 순간(법칙을 지키던 값이 깨진 변경)을 기준으로 앞뒤 사건을 모은다.
+ * 위반 이후의 조치(예: 운영자가 문을 잠근 것)를 원인으로 오인하지 않기 위함.
+ */
+export function findCauses(v: Violation, events: ChangeEvent[], schema: SystemSchema, windowMs = 20_000, rowNow?: Row, inv?: Invariant): CauseEvent[] {
   const vKey = String(v.pk);
-  const selfEvents = events.filter((e) => e.collection === v.collection && String(e.pk) === vKey);
-  const end = selfEvents.length ? Math.max(...selfEvents.map((e) => e.ts)) : Math.max(0, ...events.map((e) => e.ts));
+  const selfEvents = events.filter((e) => e.collection === v.collection && String(e.pk) === vKey).sort((a, b) => a.ts - b.ts);
+  let onset: number | undefined;
+  if (inv && ROW_LOCAL.has(inv.expr.op)) {
+    for (const e of selfEvents) {
+      const afterOk = e.after ? evalExpr(inv.expr, e.after, NO_CTX) : true;
+      const beforeOk = e.before ? evalExpr(inv.expr, e.before, NO_CTX) : true;
+      if (!afterOk && beforeOk) onset = e.ts;
+    }
+  }
+  const end = onset ?? (selfEvents.length ? selfEvents.at(-1)!.ts : Math.max(0, ...events.map((e) => e.ts)));
   const start = end - windowMs;
   const out: CauseEvent[] = [];
 
   for (const e of selfEvents) {
-    if (e.ts < start) continue;
+    if (e.ts < start || e.ts > end) continue;
     out.push({
       ts: e.ts,
       at: rowTime(e.after ?? e.before, e.ts, 'updated'),
@@ -83,7 +99,7 @@ export function findCauses(v: Violation, events: ChangeEvent[], schema: SystemSc
     c.fields.filter((f) => f.ref?.collection === v.collection).map((f) => ({ collection: c.name, field: f.name })),
   );
   for (const e of events) {
-    if (e.ts < start || e.ts > end + 2000) continue;
+    if (e.ts < start || e.ts > end) continue;
     for (const rf of refFields) {
       if (e.collection !== rf.collection) continue;
       const row = e.after ?? e.before;

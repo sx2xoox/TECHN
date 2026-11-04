@@ -60,8 +60,6 @@ async function main() {
     assets: loadAssets(config.assetsDir),
     log,
   });
-  const status = await runtime.start();
-  if (status === 'refused') console.log(formatReport(runtime.report));
   const staticDir = path.resolve(here, '../../client/dist');
   const srv = await serve(runtime, {
     port: config.port ?? 4000,
@@ -70,6 +68,14 @@ async function main() {
     assetsDir: config.assetsDir,
     log,
   });
+  // 시스템이 아직 안 떴으면 기다렸다가 다시 시도한다
+  let status = await runtime.start();
+  for (let i = 0; status === 'error' && i < 60; i++) {
+    await new Promise((r) => setTimeout(r, 2000));
+    log(`재시도 ${i + 1}…`);
+    status = await runtime.start();
+  }
+  if (status === 'refused') console.log(formatReport(runtime.report));
   const shutdown = async () => {
     await srv.close();
     await runtime.stop();

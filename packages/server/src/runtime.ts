@@ -16,7 +16,6 @@ import {
   pkOf,
   planAffordance,
   applyCommands,
-  project,
   riskAllowed,
   verifyGrammar,
   chooseAnomaly,
@@ -305,11 +304,12 @@ export class IsomorphRuntime extends EventEmitter {
       };
     });
     const violations = world.violations.filter((v) => v.collection === kind.collection && String(v.pk) === parsed.pk);
-    const events = this.store.eventsBetween(snap.ts - 60_000, snap.ts);
+    const events = this.store.eventsBetween(snap.ts - 10 * 60_000, snap.ts);
     const sevRank = { critical: 0, warning: 1, info: 2 } as const;
     const top = [...violations].sort((a, b) => sevRank[a.severity] - sevRank[b.severity])[0];
-    const causes = top ? findCauses(top, events, this.schema, 20_000, row ?? undefined) : [];
-    const diagnosis = top ? diagnose(top, this.grammar.invariants.find((i) => i.id === top.invariantId), causes) : null;
+    const topInv = top ? this.grammar.invariants.find((i) => i.id === top.invariantId) : undefined;
+    const causes = top ? findCauses(top, events, this.schema, 20_000, row ?? undefined, topInv) : [];
+    const diagnosis = top ? diagnose(top, topInv, causes) : null;
     const affordances: AffordanceOption[] = this.grammar.affordances
       .filter((a) => a.entityKind === kind.id)
       .map((a) => {
@@ -326,7 +326,7 @@ export class IsomorphRuntime extends EventEmitter {
     const base: DryRunMessage = { type: 'dryrun', planId: null, entityId: entityIdValue, affordanceId, title: aff?.title ?? affordanceId, commands: [], commandText: [], current: null, preview: null, risk: aff?.risk ?? 'high', allowed: false };
     const snap = this.lastSnapshot;
     if (!aff || !snap) return { ...base, error: '행동을 찾을 수 없습니다' };
-    const current = project(snap, this.grammar, this.schema).find((e) => e.id === entityIdValue) ?? null;
+    const current = observe(snap, this.grammar, this.schema).entities.find((e) => e.id === entityIdValue) ?? null;
     const plan = planAffordance(snap, this.grammar, this.schema, entityIdValue, affordanceId);
     if (!plan.ok) return { ...base, current, error: plan.error };
     let commandText: string[];

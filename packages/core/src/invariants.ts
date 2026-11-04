@@ -189,9 +189,10 @@ export class DynamicInvariantLearner {
     for (const [key, s] of this.stats) {
       if (s.min < 0 || s.n === 0 || s.distinct.size < this.minDistinct) continue;
       const [collection, field] = key.split('.');
-      const covered = existing.some(
-        (i) => i.collection === collection && i.expr.op === 'cmp' && i.expr.field === field && (i.expr.cmp === '>=' || i.expr.cmp === '>'),
-      );
+      const covered =
+        existing.some((i) => i.collection === collection && i.expr.op === 'cmp' && i.expr.field === field && (i.expr.cmp === '>=' || i.expr.cmp === '>')) ||
+        // DB 가 이미 강제하는 규칙은 위반될 수 없으므로 제안하지 않는다
+        this.schema.constraints.some((c) => c.enforced && c.collection === collection && fieldsOfExpr(c.expr).includes(field));
       if (covered) continue;
       out.push({
         id: `dyn_nonneg_${slug(collection)}_${slug(field)}`,

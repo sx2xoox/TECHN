@@ -1,0 +1,14 @@
+{
+  "adapter": {
+    "type": "postgres",
+    "connectionString": "postgres://postgres@127.0.0.1:5433/postgres",
+    "system": "demo-shop"
+  },
+  "compile": { "mode": "auto" },
+  "writeMode": "medium",
+  "pollMs": 500,
+  "port": 4000,
+  "storePath": ".data/events.sqlite",
+  "numRuns": 150,
+  "assetsDir": "assets/generated"
+}

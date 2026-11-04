@@ -79,6 +79,12 @@ export async function serve(runtime: IsomorphRuntime, opts: ServeOptions = {}) {
   const onWorld = (world: WorldState) => broadcast({ type: 'world', mode: 'live', world }, (c) => c.seekTs === null);
   const onActions = () => broadcast({ type: 'actions', actions: runtime.getActions() });
   const onGrammar = () => runtime.grammar && broadcast({ type: 'grammar', grammar: runtime.grammar, legend: runtime.hello().legend });
+  const onStatus = () => {
+    if (!runtime.grammar) return;
+    broadcast(runtime.hello());
+    if (runtime.world) broadcast({ type: 'world', mode: 'live', world: runtime.world }, (c) => c.seekTs === null);
+  };
+  runtime.on('status', onStatus);
   const onToast = (t: { level: 'info' | 'success' | 'warning' | 'error'; message: string }) => broadcast({ type: 'toast', ...t });
   runtime.on('world', onWorld);
   runtime.on('actions', onActions);
@@ -164,6 +170,7 @@ export async function serve(runtime: IsomorphRuntime, opts: ServeOptions = {}) {
       runtime.off('actions', onActions);
       runtime.off('grammar', onGrammar);
       runtime.off('toast', onToast);
+      runtime.off('status', onStatus);
       for (const c of clients) c.ws.terminate();
       await new Promise<void>((resolve) => wss.close(() => resolve()));
       await new Promise<void>((resolve) => server.close(() => resolve()));

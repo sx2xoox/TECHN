@@ -229,3 +229,22 @@ describe('honest legend', () => {
     expect(masked.email).toBe('m•••m');
   });
 });
+
+describe('cause analysis anchoring', () => {
+  it('anchors at the violation onset, not at later fixes', () => {
+    const t = NOW;
+    const iso = (x: number) => new Date(x).toISOString();
+    const events: ChangeEvent[] = [
+      { ts: t, collection: 'orders', pk: 20, kind: 'insert', before: null, after: { id: 20, product_id: 1, status: 'pending', created_at: iso(t - 30), updated_at: iso(t - 30) } },
+      { ts: t, collection: 'orders', pk: 21, kind: 'insert', before: null, after: { id: 21, product_id: 1, status: 'pending', created_at: iso(t - 10), updated_at: iso(t - 10) } },
+      { ts: t + 800, collection: 'products', pk: 1, kind: 'update', before: { id: 1, stock: 1, active: true }, after: { id: 1, stock: -1, active: true } },
+      // 30초 뒤 운영자가 문을 잠금 — 원인이 아니다
+      { ts: t + 30_800, collection: 'products', pk: 1, kind: 'update', before: { id: 1, stock: -1, active: true }, after: { id: 1, stock: -1, active: false } },
+    ];
+    const v = observe(shopSnapshot({ stock: -1 }), shopGrammar, shopSchema).violations.find((x) => x.invariantId === 'stock_nonneg')!;
+    const inv = shopGrammar.invariants[0];
+    const causes = findCauses(v, events, shopSchema, 20_000, undefined, inv);
+    expect(causes.map((c) => c.summary)).not.toContain('active: true → false');
+    expect(diagnose(v, inv, causes).pattern).toBe('race');
+  });
+});
