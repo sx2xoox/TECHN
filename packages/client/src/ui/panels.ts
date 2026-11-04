@@ -132,15 +132,34 @@ export interface InspectorHandlers {
 export class Inspector {
   readonly el = h('aside', { id: 'inspector', class: 'panel right hidden' });
   current: string | null = null;
+  /** 같은 내용이면 다시 그리지 않는다(실시간 갱신 중에도 버튼이 바뀌지 않아 클릭이 사라지지 않게) */
+  private lastSig: string | null = null;
+  private stableNodes = new Map<string, { sig: string; el: HTMLElement }>();
 
   constructor(private hnd: InspectorHandlers) {}
 
+  private reset() {
+    this.lastSig = null;
+    this.stableNodes.clear();
+  }
+
+  /** 내용(sig)이 그대로면 이전 DOM 노드를 그대로 다시 쓴다: 누르려던 버튼이 갱신 도중 교체되지 않는다 */
+  private stable(key: string, sig: string, build: () => HTMLElement) {
+    const old = this.stableNodes.get(key);
+    if (old && old.sig === sig) return old.el;
+    const el = build();
+    this.stableNodes.set(key, { sig, el });
+    return el;
+  }
+
   hide() {
     this.current = null;
+    this.reset();
     this.el.classList.add('hidden');
   }
 
   loading(entity: WorldEntity, kindTitle: string) {
+    this.reset();
     this.current = entity.id;
     this.el.classList.remove('hidden');
     clear(this.el);
@@ -157,6 +176,7 @@ export class Inspector {
 
   /** 가상 세계(시뮬레이션)의 개체: 서버에 묻지 않고 장면에 담긴 것만 보여준다 */
   virtual(e: WorldEntity, kindTitle: string, t: number) {
+    this.reset();
     this.current = e.id;
     this.el.classList.remove('hidden');
     clear(this.el);
@@ -171,7 +191,16 @@ export class Inspector {
 
   render(m: InspectMessage, kindTitle: string, invariants: Invariant[], history: boolean) {
     if (m.entityId !== this.current) return;
+    const sig = JSON.stringify([m, kindTitle, history, invariants.map((i) => [i.id, i.status])]);
+    if (sig === this.lastSig) return;
+    this.lastSig = sig;
+    const scrollTop = this.el.scrollTop;
     clear(this.el);
+    this.draw(m, kindTitle, invariants, history);
+    this.el.scrollTop = scrollTop;
+  }
+
+  private draw(m: InspectMessage, kindTitle: string, invariants: Invariant[], history: boolean) {
     const e = m.entity;
     if (!e) {
       this.el.append(h('div', { class: 'panel-head' }, h('h2', null, m.entityId), h('button', { class: 'x', onclick: () => this.hnd.onClose() }, '✕')), h('p', { class: 'muted' }, '이 시점의 세계에는 이 개체가 없습니다.'));
@@ -182,21 +211,25 @@ export class Inspector {
 
     // 법칙 위반
     if (m.violations.length) {
-      this.el.append(h('h3', { class: 'bad' }, `법칙 위반 ${m.violations.length}`));
-      for (const v of m.violations) {
-        const inv = invariants.find((i) => i.id === v.invariantId);
-        this.el.append(
-          h('div', { class: 'violation' },
-            h('div', null, h('strong', null, v.title), ' ', inv ? invariantBadge(inv) : null, ' ', h('span', { class: 'badge anomaly' }, ANOMALY_KO[v.kind])),
-            h('div', { class: 'mono small' }, Object.entries(v.values).map(([k, x]) => `${k} = ${valueText(x)}`).join(', ')),
-            inv?.status === 'proposed' && !history
-              ? h('div', { class: 'row' },
-                  h('button', { class: 'btn small', onclick: () => this.hnd.onInvariant(inv.id, 'confirmed') }, '법칙으로 확정'),
-                  h('button', { class: 'btn small ghost', onclick: () => this.hnd.onInvariant(inv.id, 'dismissed') }, '이 법칙 무시'))
-              : null,
-          ),
-        );
-      }
+      const sigV = JSON.stringify([m.entityId, history, m.violations, m.violations.map((v) => invariants.find((i) => i.id === v.invariantId)?.status)]);
+      this.el.append(this.stable('violations', sigV, () => {
+        const box = h('div', null, h('h3', { class: 'bad' }, `법칙 위반 ${m.violations.length}`));
+        for (const v of m.violations) {
+          const inv = invariants.find((i) => i.id === v.invariantId);
+          box.append(
+            h('div', { class: 'violation' },
+              h('div', null, h('strong', null, v.title), ' ', inv ? invariantBadge(inv) : null, ' ', h('span', { class: 'badge anomaly' }, ANOMALY_KO[v.kind])),
+              h('div', { class: 'mono small' }, Object.entries(v.values).map(([k, x]) => `${k} = ${valueText(x)}`).join(', ')),
+              inv?.status === 'proposed' && !history
+                ? h('div', { class: 'row' },
+                    h('button', { class: 'btn small', onclick: () => this.hnd.onInvariant(inv.id, 'confirmed') }, '법칙으로 확정'),
+                    h('button', { class: 'btn small ghost', onclick: () => this.hnd.onInvariant(inv.id, 'dismissed') }, '이 법칙 무시'))
+                : null,
+            ),
+          );
+        }
+        return box;
+      }));
     }
 
     // 원인 진단
@@ -240,16 +273,16 @@ export class Inspector {
 
     // 행동
     if (m.affordances.length) {
-      this.el.append(h('h3', null, '세계를 만져 시스템 바꾸기'));
-      for (const a of m.affordances) {
-        this.el.append(
-          h('div', { class: 'affordance' },
-            h('button', { class: `btn act risk-${a.risk}`, disabled: !a.allowed, onclick: () => this.hnd.onAffordance(m.entityId, a.id) }, a.title),
-            h('div', { class: 'small muted' }, `${a.description} · 위험도 ${riskKo(a.risk)}`, a.reason ? h('div', { class: 'small bad' }, a.reason) : null),
-          ),
-        );
-      }
-      this.el.append(h('p', { class: 'muted small' }, '누르면 먼저 드라이런(미래 장면)을 보여주고, 승인해야만 실행됩니다.'));
+      this.el.append(this.stable('affordances', JSON.stringify([m.entityId, m.affordances]), () =>
+        h('div', null,
+          h('h3', null, '세계를 만져 시스템 바꾸기'),
+          m.affordances.map((a) =>
+            h('div', { class: 'affordance' },
+              h('button', { class: `btn act risk-${a.risk}`, disabled: !a.allowed, onclick: () => this.hnd.onAffordance(m.entityId, a.id) }, a.title),
+              h('div', { class: 'small muted' }, `${a.description} · 위험도 ${riskKo(a.risk)}`, a.reason ? h('div', { class: 'small bad' }, a.reason) : null),
+            )),
+          h('p', { class: 'muted small' }, '누르면 먼저 드라이런(미래 장면)을 보여주고, 승인해야만 실행됩니다.'),
+        )));
     }
   }
 }

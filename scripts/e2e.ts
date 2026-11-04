@@ -74,6 +74,10 @@ async function main() {
     await page.waitForTimeout(500);
     await shot('02-inspector');
 
+    // 실시간 갱신이 계속 들어와도 누르려던 버튼은 같은 노드로 남아야 한다(갱신 도중 클릭이 사라지지 않게)
+    const lockBtn = await page.locator('#inspector button.act', { hasText: '문 잠그기' }).elementHandle();
+    await page.waitForTimeout(4000);
+    assert(await lockBtn!.evaluate((el: Element) => el.isConnected), '실시간 갱신 중에도 행동 버튼이 교체되지 않음');
     await page.locator('#inspector button.act', { hasText: '문 잠그기' }).click();
     await page.waitForSelector('#modal-root .modal pre', { timeout: 10_000 });
     const sql = await page.locator('#modal-root .modal pre').textContent();
