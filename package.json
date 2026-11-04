@@ -1,0 +1,30 @@
+{
+  "name": "isomorph",
+  "private": true,
+  "version": "0.1.0",
+  "description": "ISOMORPH — 모든 소프트웨어를 살아있는 세계로 바꾸는 역(逆) 디지털 트윈 엔진",
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "demo": "tsx scripts/demo.ts",
+    "dev:client": "npm run dev -w @isomorph/client",
+    "build": "npm run build -w @isomorph/client",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "bench:compile": "tsx scripts/bench-compile.ts",
+    "assets": "tsx packages/assets/src/cli.ts",
+    "e2e": "tsx scripts/e2e.ts"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.20.0",
+    "typescript": "~5.9.3",
+    "vitest": "^3.2.4"
+  }
+}
