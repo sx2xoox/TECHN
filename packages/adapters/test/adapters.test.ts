@@ -67,6 +67,10 @@ describe('PostgresAdapter', () => {
     expect(parseCheck('CHECK ((qty < 100))')).toEqual({ op: 'cmp', field: 'qty', cmp: '<', value: 100 });
     expect(parseCheck("CHECK ((kind <> 'x'::text))")).toEqual({ op: 'cmp', field: 'kind', cmp: '!=', value: 'x' });
     expect(parseCheck('CHECK ((a > b) AND (c > 0))')).toBeNull();
+    expect(parseCheck('CHECK ((capacity > (0)::numeric))')).toEqual({ op: 'cmp', field: 'capacity', cmp: '>', value: 0 });
+    expect(parseCheck('CHECK ((started_at <= ended_at))')).toEqual({ op: 'cmpField', field: 'started_at', cmp: '<=', other: 'ended_at' });
+    expect(parseCheck("CHECK ((note <> 'it''s'::text))")).toEqual({ op: 'cmp', field: 'note', cmp: '!=', value: "it's" });
+    expect(parseCheck('CHECK ((price >= (-1.5)::double precision))')).toEqual({ op: 'cmp', field: 'price', cmp: '>=', value: -1.5 });
   });
 });
 

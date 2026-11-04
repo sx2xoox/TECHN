@@ -122,6 +122,9 @@ function planKind(c: CollectionSchema, role: Role, schema: SystemSchema, roles: 
   }
 
   const fields = c.fields.filter((f) => f.name !== c.primaryKey);
+  // 색깔(tint)은 '상태'를 뜻하는 범주형 필드가 우선 차지한다(값이 하나뿐인 필드는 구분할 것이 없어 제외)
+  const enumish = fields.filter((f) => f.type === 'string' && !f.ref && !f.sensitive && (f.enumValues?.length ?? 0) > 1);
+  const tintField = (enumish.find((f) => ENUM_RE.test(f.name)) ?? enumish.find((f) => f.enumValues!.length <= 8))?.name;
   // 1) 참조 필드: NPC는 경로, 건물은 숨김
   const refs = fields.filter((f) => f.ref);
   if (role === 'npc') {
@@ -176,9 +179,9 @@ function planKind(c: CollectionSchema, role: Role, schema: SystemSchema, roles: 
       else hidden.push(n);
       continue;
     }
-    if (f.type === 'string' && f.enumValues?.length && (ENUM_RE.test(n) || f.enumValues.length <= 8)) {
+    if (f.type === 'string' && f.enumValues?.length && (ENUM_RE.test(n) || f.enumValues.length <= 8) && !(SIGN_RE.test(n) && n !== tintField)) {
       let consumed = false;
-      if (take('tint')) {
+      if (n === tintField && take('tint')) {
         const { map, fallback } = assignColors(f.enumValues);
         channels.push({ channel: 'tint', field: n, map, fallback, readOnly: true });
         consumed = true;

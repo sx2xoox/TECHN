@@ -30,13 +30,28 @@ function mapType(dataType: string, udt: string, enums: Map<string, string[]>): {
 
 const OP_MAP: Record<string, '>=' | '>' | '<=' | '<' | '==' | '!='> = { '>=': '>=', '>': '>', '<=': '<=', '<': '<', '=': '==', '<>': '!=' };
 
-/** `CHECK ((stock >= 0))` 같은 단순 CHECK 제약을 불변식 식으로 해석한다. */
+/**
+ * `CHECK ((stock >= 0))`, `CHECK ((capacity > (0)::numeric))`, `CHECK ((kind <> 'x'::text))`,
+ * `CHECK ((started_at <= ended_at))` 같은 단일 비교 CHECK 제약을 불변식 식으로 해석한다.
+ * AND/OR 등 복합 조건은 해석하지 않는다(null).
+ */
 export function parseCheck(def: string): Expr | null {
-  const m = /^CHECK\s*\(+\s*"?([a-zA-Z_][\w]*)"?\s*(>=|<=|<>|>|<|=)\s*\(?\s*'?(-?[\w.]+?)'?(?:::\w+)?\s*\)?\s*\)+$/i.exec(def.trim());
+  const s = def
+    .trim()
+    .replace(/::[a-z_][a-z0-9_ ]*(\[\])?/gi, '') // 타입 캐스트 제거
+    .replace(/[()]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const m = /^CHECK "?([a-zA-Z_][\w]*)"? ?(>=|<=|<>|!=|>|<|=) ?('(?:[^']|'')*'|-?\d+(?:\.\d+)?|"?[a-zA-Z_][\w]*"?)$/i.exec(s);
   if (!m) return null;
-  const raw = m[3];
-  const value = /^-?\d+(\.\d+)?$/.test(raw) ? Number(raw) : raw;
-  return { op: 'cmp', field: m[1], cmp: OP_MAP[m[2]], value };
+  const cmp = OP_MAP[m[2] === '!=' ? '<>' : m[2]];
+  const rhs = m[3];
+  if (rhs.startsWith("'")) return { op: 'cmp', field: m[1], cmp, value: rhs.slice(1, -1).replace(/''/g, "'") };
+  if (/^-?\d/.test(rhs)) return { op: 'cmp', field: m[1], cmp, value: Number(rhs) };
+  const lower = rhs.replace(/"/g, '').toLowerCase();
+  if (lower === 'true' || lower === 'false') return { op: 'cmp', field: m[1], cmp, value: lower === 'true' };
+  if (lower === 'null') return null;
+  return { op: 'cmpField', field: m[1], cmp, other: rhs.replace(/"/g, '') };
 }
 
 export class PostgresAdapter implements Adapter {
