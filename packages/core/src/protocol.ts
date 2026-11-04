@@ -117,6 +117,7 @@ export interface ActionRecord {
   ts: number;
   title: string;
   entityId: string;
+  affordanceId?: string;
   commands: UpdateCommand[];
   commandText: string[];
   status: 'applied' | 'verified' | 'mismatch' | 'failed' | 'undone';

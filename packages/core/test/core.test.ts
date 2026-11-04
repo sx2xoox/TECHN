@@ -92,7 +92,7 @@ describe('lens.put', () => {
   it('plans affordances (relative and absolute)', () => {
     const s = shopSnapshot();
     const restock = planAffordance(s, shopGrammar, shopSchema, 'warehouse:1', 'restock');
-    expect(restock.ok && restock.commands[0].patch).toEqual({ stock: 15 });
+    expect(restock.ok && restock.commands[0].patch).toEqual({ stock: 17 }); // 7 + 2상자×5
     const cancel = planAffordance(s, shopGrammar, shopSchema, 'merchant:10', 'cancel');
     expect(cancel.ok && cancel.commands[0].patch).toEqual({ status: 'cancelled' });
     expect(planAffordance(s, shopGrammar, shopSchema, 'house:1', 'lock').ok).toBe(false);

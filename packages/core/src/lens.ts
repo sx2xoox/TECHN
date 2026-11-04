@@ -255,6 +255,17 @@ export function put(snapshot: Snapshot, grammar: WorldGrammar, schema: SystemSch
       target = (e.value ?? null) as VisualValue;
     }
     if (sameValue(target, current)) continue; // 세계가 이미 목표 상태
+    // 상대 편집(+n 상자)은 양자화 격자에 맞추지 않고 정확히 n×(상자당 단위)만큼 더한다.
+    // linear(v + n·k) = linear(v) + n 이므로 PutGet 이 그대로 성립한다.
+    if (e.delta !== undefined && isQuant(binding) && isEditableBinding(binding)) {
+      const raw = row[binding.field];
+      if (typeof raw !== 'number') return { ok: false, error: `${binding.field} 의 현재 값이 숫자가 아닙니다` };
+      const k = (binding.scale.domain[1] - binding.scale.domain[0]) / (binding.scale.range[1] - binding.scale.range[0]);
+      const f = findField(schema, kind.collection, binding.field);
+      const next = raw + e.delta * k;
+      patch[binding.field] = !f || f.type === 'integer' ? Math.round(next) : next;
+      continue;
+    }
     const decoded = decodeChannel(binding, target, findField(schema, kind.collection, binding.field));
     if (!decoded.ok) return { ok: false, error: decoded.error };
     if (binding.field in patch && !sameValue(patch[binding.field], decoded.value)) {
