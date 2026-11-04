@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: typecheck · unit · compile benchmark · build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run bench:compile
+      - run: npm run build
+
+  integration:
+    name: real PostgreSQL 16 + real Docker
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+          cache: npm
+      - run: npm ci
+      - name: start a container for the Docker adapter test
+        run: docker run -d --name iso-web busybox:1.36 sh -c 'while true; do sleep 1; done'
+      - run: npx vitest run packages/adapters/test/real.test.ts
+        env:
+          ISOMORPH_TEST_PG_URL: postgres://postgres@127.0.0.1:5432/postgres
+          ISOMORPH_TEST_DOCKER: '1'
+
+  e2e:
+    name: browser end-to-end demo
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+          cache: npm
+      - run: npm ci
+      - run: npm i --no-save playwright@1.55.0
+      - run: npx playwright install --with-deps chromium
+      - run: npm run build
+      - run: npm run e2e -- --shots e2e-screenshots
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-screenshots
+          path: e2e-screenshots
