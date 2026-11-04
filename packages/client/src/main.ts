@@ -1,9 +1,10 @@
 import './style.css';
-import type { DryRunMessage, HelloMessage, InspectMessage, ServerMessage, WorldState } from '@isomorph/core';
+import type { DryRunMessage, HelloMessage, InspectMessage, ServerMessage, SimulationResult, WorldState } from '@isomorph/core';
 import { loadFonts } from './fonts.ts';
 import { Connection, wsUrl } from './net.ts';
 import { stressHello, stressWorld } from './stress.ts';
 import { h } from './ui/dom.ts';
+import { LabPanel, SimPlayer } from './ui/lab.ts';
 import { dryRunModal, ModalRoot, Screen, verificationModal } from './ui/modals.ts';
 import { ActionLog, countViolations, Inspector, LegendPanel, Toasts, Tooltip, Topbar } from './ui/panels.ts';
 import { Timeline } from './ui/timeline.ts';
@@ -36,13 +37,15 @@ async function main() {
   const send: Connection['send'] = (m) => conn?.send(m);
 
   const kindTitle = (kindId: string) => state.hello?.grammar.kinds.find((k) => k.id === kindId)?.title ?? kindId;
+  /** 지금 화면에 보이는 세계(가상 재생 중이면 그 장면) */
+  const shownWorld = () => (player.active ? player.frame()?.world ?? null : state.world);
 
   const town = new Town({
     onSelect(id) {
       select(id);
     },
     onHover(id, x, y) {
-      const e = id ? state.world?.entities.find((x) => x.id === id) : null;
+      const e = id ? shownWorld()?.entities.find((x) => x.id === id) : null;
       const r = stage.getBoundingClientRect();
       if (e) tooltip.show(e, kindTitle(e.kind), x + r.left, y + r.top);
       else tooltip.hide();
@@ -59,8 +62,53 @@ async function main() {
     (ts) => send({ type: 'seek', ts }),
     () => send({ type: 'live' }),
   );
+  const lab = new LabPanel({
+    onClose: () => lab.toggle(false),
+    onSimulate: (hyp) => send({ type: 'simulate', hypothesis: hyp }),
+    onPlay: (r) => startSim(r),
+  });
+  const player = new SimPlayer({
+    onFrame: () => {
+      const f = player.frame();
+      if (!f) return;
+      town.setWorld(f.world);
+      const { n, critical } = countViolations(f.world);
+      topbar.setViolations(n, critical);
+      if (state.selected) {
+        const e = f.world.entities.find((x) => x.id === state.selected);
+        if (e) inspector.virtual(e, kindTitle(e.kind), f.t);
+      }
+    },
+    onExit: () => exitSim(),
+  });
+
+  function startSim(r: SimulationResult) {
+    if (state.mode === 'history') send({ type: 'live' });
+    select(null);
+    stage.classList.add('virtual');
+    timeline.el.classList.add('hidden');
+    player.start(r);
+  }
+
+  function exitSim() {
+    player.stop();
+    stage.classList.remove('virtual');
+    timeline.el.classList.remove('hidden');
+    select(null);
+    if (state.world) onWorld(state.world, 'live');
+  }
+
   const topbar = new Topbar({
-    onLegend: () => legend.toggle(),
+    onLab: () => {
+      const open = !lab.visible;
+      legend.toggle(false);
+      lab.toggle(open);
+      if (open) send({ type: 'lab' });
+    },
+    onLegend: () => {
+      lab.toggle(false);
+      legend.toggle();
+    },
     onFit: () => town.fit(),
     onZoom: (d) => town.zoom(d),
     onVerification: async () => {
@@ -85,13 +133,19 @@ async function main() {
     },
   });
 
-  app.append(topbar.el, stage, legend.el, inspector.el, actions.el, timeline.el, timeline.bannerEl, tooltip.el, toasts.el, modal.el, screen.el);
+  app.append(topbar.el, stage, legend.el, lab.el, inspector.el, actions.el, timeline.el, timeline.bannerEl, player.el, tooltip.el, toasts.el, modal.el, screen.el);
   await town.init(stage);
 
   function select(id: string | null) {
     state.selected = id;
     town.select(id);
     if (!id) return inspector.hide();
+    if (player.active) {
+      const f = player.frame();
+      const e = f?.world.entities.find((x) => x.id === id);
+      if (e && f) inspector.virtual(e, kindTitle(e.kind), f.t);
+      return;
+    }
     const e = state.world?.entities.find((x) => x.id === id);
     if (e) inspector.loading(e, kindTitle(e.kind));
     send({ type: 'inspect', entityId: id });
@@ -110,6 +164,7 @@ async function main() {
   function onWorld(w: WorldState, mode: 'live' | 'history') {
     state.world = w;
     if (state.hello?.verification.ok) screen.hide();
+    if (player.active) return; // 가상 세계를 재생하는 동안 실제 세계는 뒤에서만 갱신
     town.setWorld(w);
     const { n, critical } = countViolations(w);
     topbar.setViolations(n, critical);
@@ -163,6 +218,13 @@ async function main() {
         return onDryRun(m);
       case 'actions':
         return actions.render(m.actions);
+      case 'lab':
+        return lab.setLab(m.model, m.hypotheses);
+      case 'simulation-progress':
+        return lab.setProgress(m.hypothesisId, m.done, m.total);
+      case 'simulation':
+        lab.addResult(m.result);
+        return startSim(m.result);
       case 'grammar':
         if (state.hello) {
           state.hello = { ...state.hello, grammar: m.grammar, legend: m.legend };
@@ -185,6 +247,7 @@ async function main() {
 
   window.addEventListener('keydown', (ev) => {
     if (ev.target instanceof HTMLInputElement) return;
+    if (ev.key === 'Escape' && player.active) exitSim();
     if (ev.key === 'l') legend.toggle();
     if (ev.key === 'f') town.fit();
     if (ev.key === '+' || ev.key === '=') town.zoom(1);
@@ -216,7 +279,7 @@ async function main() {
     }
   });
   conn.connect();
-  (window as unknown as { __iso: unknown }).__iso = { town, state, send };
+  (window as unknown as { __iso: unknown }).__iso = { town, state, send, player };
 }
 
 main();

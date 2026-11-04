@@ -5,6 +5,7 @@ import { channelKo, clear, describeVisual, fmtTime, h, riskKo, valueText } from 
 /* ───────────────────────────── 상단 막대 ───────────────────────────── */
 
 export interface TopbarHandlers {
+  onLab(): void;
   onLegend(): void;
   onFit(): void;
   onZoom(dir: number): void;
@@ -33,6 +34,7 @@ export class Topbar {
       this.viol,
       this.write,
       this.fps,
+      h('button', { class: 'btn lab', onclick: () => hnd.onLab(), title: '가설 실험실' }, '가설 실험실'),
       h('button', { class: 'btn', onclick: () => hnd.onLegend(), title: '범례' }, '범례'),
       h('button', { class: 'btn', onclick: () => hnd.onFit(), title: '전체 보기' }, '전체'),
       h('button', { class: 'btn icon', onclick: () => hnd.onZoom(1), title: '확대' }, '+'),
@@ -151,6 +153,20 @@ export class Inspector {
       h('div', { class: 'grow' }, h('h2', null, e.label), h('div', { class: 'muted small' }, `${kindTitle} · ${e.source.collection} #${e.source.pk}`)),
       h('button', { class: 'x', onclick: () => this.hnd.onClose() }, '✕'),
     );
+  }
+
+  /** 가상 세계(시뮬레이션)의 개체: 서버에 묻지 않고 장면에 담긴 것만 보여준다 */
+  virtual(e: WorldEntity, kindTitle: string, t: number) {
+    this.current = e.id;
+    this.el.classList.remove('hidden');
+    clear(this.el);
+    this.el.append(
+      this.header(e, kindTitle),
+      h('div', { class: 'note virtual' }, `가상 세계의 개체입니다(t = ${(t / 1000).toFixed(1)}초). 학습한 규칙으로 예측한 모습이며 실제 데이터가 아닙니다.`),
+      h('h3', null, '이 순간의 모습'),
+      h('ul', null, Object.entries(e.visual).filter(([, v]) => v !== null && v !== '').map(([c, v]) => h('li', null, h('span', { class: 'muted' }, `${channelKo(c as keyof typeof CHANNELS)}: `), describeVisual(c as keyof typeof CHANNELS, v, e.outOfRange.includes(c as keyof typeof CHANNELS))))),
+    );
+    if (e.anomalies.length) this.el.append(h('h3', { class: 'bad' }, '예측된 법칙 위반'), h('ul', null, e.anomalies.map((a) => h('li', null, a.message, ' ', h('span', { class: 'badge anomaly' }, ANOMALY_KO[a.kind])))));
   }
 
   render(m: InspectMessage, kindTitle: string, invariants: Invariant[], history: boolean) {

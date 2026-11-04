@@ -10,7 +10,7 @@ import { IsomorphRuntime, serve } from '@isomorph/server';
  * 종단 간 검증(E2E): 실제 브라우저로 킬러 데모 시나리오를 처음부터 끝까지 수행한다.
  *   1) 반짝 세일 → 경쟁 조건 → 유령 상자   2) 클릭 → 원인 진단
  *   3) 문 잠그기 드라이런 → 승인 → 실제 DB 반영 + 관측 검증   4) 되돌리기
- *   5) 범례 · 시간 여행 · 검증 보고서
+ *   5) 범례 · 시간 여행 · 검증 보고서   6) 가설 실험실 → 가상 세계 재생
  * 사용: npm run build && npm run e2e [-- --shots docs/screenshots]
  */
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -117,6 +117,32 @@ async function main() {
     assert((await page.locator('#modal-root .modal h2').textContent())?.includes('통과'), '검증 보고서: 렌즈 법칙 통과');
     await page.waitForTimeout(400);
     await shot('07-verification');
+    await page.keyboard.press('Escape');
+
+    // 6) 가설 실험실: 기록에서 규칙을 배우고 "만약?" 을 굴려 가상 세계로 재생
+    await page.locator('#topbar button', { hasText: '가설 실험실' }).click();
+    await page.waitForSelector('#lab:not(.hidden) .rules li', { timeout: 15_000 });
+    const rules = (await page.locator('#lab .rules li').allTextContents()).join(' / ');
+    assert(rules.includes('stock') && rules.includes('failed'), `기록에서 배운 규칙에 '재고가 바닥나면 실패' 가 있음`);
+    await page.waitForTimeout(300);
+    await shot('11-lab');
+    const ordersBefore = Number((await shop.db.query<{ n: string }>('select count(*) as n from orders')).rows[0].n);
+    await page.locator('#lab .hyp', { hasText: '반짝 세일:' }).locator('button').click();
+    await page.waitForSelector('#sim-player:not(.hidden)', { timeout: 60_000 });
+    assert(await page.locator('#stage.virtual').count() === 1, '시뮬레이션 결과가 가상 세계 화면으로 재생됨');
+    const prob = await page.locator('#lab .sim-result .law-bar .small.muted').first().textContent();
+    assert(prob?.includes('새로 깨질 확률'), `가설 결과: ${prob?.trim()}`);
+    // 가상 세계에서 위반이 나타나는 장면까지 재생
+    const negCount = `((w) => w.violations.filter((v) => v.invariantId === 'nonneg_products_stock').length)`;
+    await page.waitForFunction(`(() => { const p = (${iso})().player; const f = p.frame(); return f && ${negCount}(f.world) > ${negCount}(p.result.frames[0].world); })()`, null, { timeout: 30_000 }).catch(() => undefined);
+    await page.locator('#sim-player button', { hasText: '⏸' }).click().catch(() => undefined);
+    await page.waitForTimeout(400);
+    await shot('12-virtual');
+    const ordersAfter = Number((await shop.db.query<{ n: string }>('select count(*) as n from orders')).rows[0].n);
+    const simulated = await page.evaluate(`Object.values((${iso})().player.frame()?.world.entities ?? []).length`);
+    assert(ordersAfter - ordersBefore < 200 && Number(simulated) > 0, `가상 세계는 실제 DB 를 건드리지 않음(실제 주문 증가 ${ordersAfter - ordersBefore}건은 평소 트래픽)`);
+    await page.locator('#sim-player button', { hasText: '실제로 돌아가기' }).click();
+    assert(await page.locator('#stage.virtual').count() === 0, '실제 세계로 복귀');
     assert(errors.length === 0, `브라우저 오류 없음${errors.length ? `: ${errors.join(' | ')}` : ''}`);
     console.log('\nE2E 통과 ✅');
   } finally {
