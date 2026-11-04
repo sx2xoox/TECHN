@@ -62,7 +62,8 @@ function door(ctx: Ctx, x: number, y: number, w: number, h: number, open: boolea
 }
 
 export type BuildingKey =
-  | 'house' | 'warehouse' | 'shop' | 'bank' | 'factory' | 'townhall' | 'library' | 'clinic' | 'school' | 'tower' | 'post' | 'farm';
+  | 'house' | 'warehouse' | 'shop' | 'bank' | 'factory' | 'townhall' | 'library' | 'clinic' | 'school' | 'tower' | 'post' | 'farm'
+  | 'theater' | 'station' | 'office' | 'signpost';
 
 type Drawer = (ctx: Ctx, lit: boolean) => void;
 
@@ -257,6 +258,72 @@ const DRAW: Record<BuildingKey, { w: number; h: number; draw: Drawer }> = {
       windowAt(ctx, 22, 14, 4, 4, lit);
       box(ctx, 26, 24, 5, 6, '#e8c766');
       rect(ctx, 3, 29, 26, 1, OUT);
+    },
+  },
+  /** 극장: 영화·음악·방송 같은 콘텐츠 */
+  theater: {
+    w: 32, h: 32,
+    draw(ctx, lit) {
+      box(ctx, 4, 10, 24, 20, '#6b3f7a');
+      box(ctx, 3, 4, 26, 7, '#2b2533');
+      for (let x = 5; x < 28; x += 3) {
+        rect(ctx, x, 5, 1, 1, lit ? '#ffd27a' : '#6d5d3f');
+        rect(ctx, x, 9, 1, 1, lit ? '#ffd27a' : '#6d5d3f');
+      }
+      rect(ctx, 8, 7, 16, 1, '#e5533d');
+      box(ctx, 6, 14, 5, 7, '#e8c766');
+      box(ctx, 21, 14, 5, 7, '#5ce1e6');
+      box(ctx, 12, 17, 8, 13, lit ? '#2c1d14' : '#4a2c18');
+      for (let y = 18; y < 29; y++) {
+        rect(ctx, 13, y, 2, 1, '#c0392b');
+        rect(ctx, 17, y, 2, 1, '#c0392b');
+      }
+      rect(ctx, 3, 29, 26, 1, OUT);
+    },
+  },
+  /** 역: 항공·철도·운송 */
+  station: {
+    w: 32, h: 32,
+    draw(ctx, lit) {
+      gable(ctx, 16, 5, 6, 24, 1, '#3f6f8f', '#2c5068', '#5e8fb0');
+      box(ctx, 4, 11, 24, 15, '#d9cdb0');
+      box(ctx, 13, 12, 6, 6, '#ffffff');
+      rect(ctx, 16, 13, 1, 3, OUT);
+      rect(ctx, 16, 15, 2, 1, OUT);
+      windowAt(ctx, 6, 15, 5, 5, lit);
+      windowAt(ctx, 21, 15, 5, 5, lit);
+      door(ctx, 13, 19, 6, 7, lit);
+      for (let x = 2; x < 30; x += 3) rect(ctx, x, 26, 1, 4, '#6b4a2a');
+      rect(ctx, 1, 27, 30, 1, '#8a8f98');
+      rect(ctx, 1, 29, 30, 1, '#8a8f98');
+    },
+  },
+  /** 사무소: 회사·부서·팀·거래처 */
+  office: {
+    w: 32, h: 32,
+    draw(ctx, lit) {
+      box(ctx, 6, 2, 20, 2, '#5f7184');
+      box(ctx, 7, 3, 18, 27, '#8fa3b8');
+      for (let y = 5; y < 22; y += 4) for (const x of [9, 14, 19]) windowAt(ctx, x, y, 3, 3, lit);
+      door(ctx, 13, 23, 6, 7, lit);
+      rect(ctx, 6, 29, 20, 1, OUT);
+    },
+  },
+  /** 이정표: 분류·코드표·지역 같은 기준 정보 */
+  signpost: {
+    w: 32, h: 32,
+    draw(ctx, lit) {
+      box(ctx, 14, 2, 4, 4, lit ? '#ffd27a' : '#6d5d3f');
+      box(ctx, 15, 6, 3, 22, '#7a4b2a');
+      box(ctx, 5, 7, 15, 5, '#d9b26b');
+      rect(ctx, 4, 9, 1, 1, OUT);
+      rect(ctx, 7, 9, 10, 1, '#5a361d');
+      box(ctx, 13, 14, 15, 5, '#c99a55');
+      rect(ctx, 28, 16, 1, 1, OUT);
+      rect(ctx, 15, 16, 10, 1, '#5a361d');
+      box(ctx, 6, 21, 13, 4, '#d9b26b');
+      rect(ctx, 8, 22, 8, 1, '#5a361d');
+      box(ctx, 10, 27, 13, 3, '#8a8f98');
     },
   },
 };

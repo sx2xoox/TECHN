@@ -84,6 +84,7 @@ export const BindingSchema = z.union([QuantBindingSchema, CategoricalBindingSche
 export const ARCHETYPES = ['building', 'npc', 'landmark'] as const;
 export const SPRITES = [
   'house', 'warehouse', 'shop', 'bank', 'factory', 'townhall', 'library', 'clinic', 'school', 'tower', 'post', 'farm',
+  'theater', 'station', 'office', 'signpost',
   'merchant', 'villager', 'courier', 'robot',
 ] as const;
 export const REGION_THEMES = ['market', 'residential', 'finance', 'industrial', 'plaza', 'civic', 'farmland'] as const;

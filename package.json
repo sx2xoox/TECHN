@@ -20,7 +20,9 @@
     "bench:latency": "tsx scripts/bench-latency.ts",
     "stress": "echo \"브라우저에서 http://127.0.0.1:4000/?stress=10000 (npm run demo 실행 중)\"",
     "demo:agent": "tsx scripts/demo-agent.ts",
-    "bench:lab": "tsx scripts/bench-lab.ts"
+    "bench:lab": "tsx scripts/bench-lab.ts",
+    "bench:real": "tsx scripts/bench-real-schemas.ts",
+    "bench:heldout": "tsx scripts/bench-heldout-schemas.ts"
   },
   "engines": {
     "node": ">=22.13"

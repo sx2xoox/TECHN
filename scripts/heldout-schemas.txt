@@ -1,0 +1,10 @@
+# 보류 평가용 오픈소스 서비스 스키마(Rails db/schema.rb). 실행하지 않고 글자로만 읽는다.
+# 받기: while read name url; do curl -sS -o "DIR/$name.schema" "$url"; done < <(grep -v '^#' scripts/heldout-schemas.txt)
+# 2026-11-04 에 받은 기본 브랜치 기준으로 측정했다(이후 바뀌면 수치가 달라질 수 있다).
+mastodon https://raw.githubusercontent.com/mastodon/mastodon/main/db/schema.rb
+forem https://raw.githubusercontent.com/forem/forem/main/db/schema.rb
+chatwoot https://raw.githubusercontent.com/chatwoot/chatwoot/develop/db/schema.rb
+loomio https://raw.githubusercontent.com/loomio/loomio/master/db/schema.rb
+lobsters https://raw.githubusercontent.com/lobsters/lobsters/master/db/schema.rb
+maybe https://raw.githubusercontent.com/maybe-finance/maybe/main/db/schema.rb
+consul https://raw.githubusercontent.com/consuldemocracy/consuldemocracy/master/db/schema.rb

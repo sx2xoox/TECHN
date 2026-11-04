@@ -21,9 +21,12 @@ const R = {
 export const REGIONS = R;
 export const REGION_ORDER = ['market', 'residential', 'finance', 'industrial', 'civic', 'farmland', 'plaza'];
 
+/** 짧은 단어는 이름 조각 경계에서만 맞춘다(port ≠ report, bus ≠ business, trip ≠ stripe) */
+const w = (...words: string[]) => new RegExp(`(^|_)(${words.join('|')})(e?s)?($|_)`, 'i');
+
 export const PLACE_GROUPS: PlaceGroup[] = [
   { re: /(product|item|inventor|stock|sku|goods|warehouse|depot|stockroom)/i, sprite: 'warehouse', title: '창고', region: R.market },
-  { re: /(customer|user|member|patient|student|person|people|employee|citizen|client|resident|owner|author|subscriber|player)/i, sprite: 'house', title: '집', region: R.residential },
+  { re: /(customer|user|member|patient|student|person|people|employee|citizen|client|resident|owner|author|subscriber|player|passenger|traveler|traveller|guest|contact|applicant|candidate|participant|attendee|volunteer|donor|tenant|staff|actor|actress|artist|singer|performer|director|composer|writer|creator|contributor)/i, sprite: 'house', title: '집', region: R.residential },
   { re: /(account|wallet|payment|invoice|bank|ledger|budget|fund)/i, sprite: 'bank', title: '은행', region: R.finance },
   { re: /(container|server|node|host|service|pod|machine|instance|worker|cluster|vm|deployment|process|truck|vehicle|tool|workshop|plugin|skill)/i, sprite: 'factory', title: '공장', region: R.industrial },
   { re: /(book|library|article|document|post|page|wiki|course|class|lesson|school|file|memory|note)/i, sprite: 'library', title: '도서관', region: R.civic },
@@ -32,8 +35,20 @@ export const PLACE_GROUPS: PlaceGroup[] = [
   { re: /(store|shop|merchant|vendor|seller|restaurant|branch|location)/i, sprite: 'shop', title: '가게', region: R.market },
   { re: /(farm|field|crop|plant|garden)/i, sprite: 'farm', title: '농장', region: R.farmland },
   { re: /(mail|letter|notification|inbox|channel)/i, sprite: 'post', title: '우체국', region: R.civic },
+  // 콘텐츠(영화·음악·방송·게임·사진)
+  { re: /(film|movie|video|cinema|episode|series|season|album|song|music|playlist|podcast|media|photo|picture|image|gallery|broadcast|concert)|(^|_)(tracks?|shows?|games?|streams?)($|_)/i, sprite: 'theater', title: '극장', region: R.civic },
+  // 운송·여행
+  { re: /(flight|airport|airline|aircraft|airplane|runway|railway|voyage|shipping_line)|(^|_)(planes?|routes?|trips?|trains?|bus|buses|ships?|vessels?|ports?|harbou?rs?|terminals?|gates?|seats?|stops?)($|_)/i, sprite: 'station', title: '역', region: R.industrial },
+  // 조직·거래처
+  { re: /(compan|organi[sz]ation|department|employer|office|agenc|contractor|provider|institution|universit|faculty|division|committee|supplier|shipper|carrier|partner)|(^|_)(orgs?|teams?|groups?|depts?|units?|firms?)($|_)/i, sprite: 'office', title: '사무소', region: R.finance },
+  // 지리
+  { re: /(countr|cit(y|ies)|region|territor|province|district|county|address|continent|neighbou?rhood|postal|postcode|zipcode|timezone)|(^|_)((us_)?states?|areas?|zones?|places?|sites?)$/i, sprite: 'signpost', title: '이정표', region: R.plaza },
 ];
 export const DEFAULT_PLACE: PlaceGroup = { re: /.*/, sprite: 'shop', title: '건물', region: R.market };
+/** 다른 테이블이 가리키는 작은 기준표(분류·코드·종류): 이름이 아니라 구조로 알아본다 */
+export const LOOKUP_PLACE: PlaceGroup = { re: /.*/, sprite: 'signpost', title: '분류 표지판', region: R.plaza };
+/** 사건처럼 이름 붙었지만 다른 행이 가리키는 곳(예: 주문 → 주문 상세): 접수처 */
+export const EVENT_PLACE: PlaceGroup = { re: /.*/, sprite: 'post', title: '접수처', region: R.market };
 
 export interface WalkerGroup {
   re: RegExp;
@@ -41,9 +56,13 @@ export interface WalkerGroup {
   title: string;
 }
 export const WALKER_GROUPS: WalkerGroup[] = [
-  { re: /(order|purchase|sale|cart|checkout|booking|reservation|transfer|transaction|trade)/i, sprite: 'merchant', title: '상인' },
+  { re: /(order|purchase|sale|cart|checkout|booking|reservation|transfer|transaction|trade|payment|refund|deposit|withdrawal|charge|donation|bid|claim)/i, sprite: 'merchant', title: '상인' },
   { re: /(shipment|delivery|message|parcel|package|dispatch|notification)/i, sprite: 'courier', title: '배달부' },
-  { re: /(request|job|task|log|event|reading|metric|sample|alert|run|build|incident|call|invocation|step)/i, sprite: 'robot', title: '일꾼 로봇' },
+  { re: /(request|event|reading|metric|sample|alert|incident|invocation)|(^|_)(jobs?|tasks?|logs?|runs?|builds?|calls?|steps?)($|_)/i, sprite: 'robot', title: '일꾼 로봇' },
+  { re: /(rental|loan|borrow|lease|hire)/i, sprite: 'villager', title: '대여 손님' },
+  { re: /(boarding|check_?in|journey|ride|itinerar|segment)/i, sprite: 'villager', title: '여행자' },
+  { re: /(visit|attendance|enrol|session|login|page_?views?)|(^|_)(views?|clicks?|plays?|listens?|watch(es)?)($|_)/i, sprite: 'villager', title: '방문객' },
+  { re: /(review|rating|comment|repl(y|ies)|reaction|favou?rite|bookmark|mention)|(^|_)(likes?|votes?|follows?|followers?)($|_)/i, sprite: 'villager', title: '이야기꾼' },
 ];
 export const DEFAULT_WALKER: WalkerGroup = { re: /.*/, sprite: 'villager', title: '주민' };
 

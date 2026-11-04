@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { verifyGrammar } from '@isomorph/core';
+import { markSensitive, verifyGrammar, type SystemSchema } from '@isomorph/core';
 import {
   BENCH_SCHEMAS,
   compile,
@@ -50,6 +50,39 @@ describe('heuristic metaphor compiler', () => {
       const r = await compile(s, { mode: 'heuristic', numRuns: 40 });
       expect(r.report.ok, `${s.system}: ${r.report.issues.map((i) => i.message).join('; ')}`).toBe(true);
     }
+  });
+});
+
+describe('metaphors for unfamiliar schemas', () => {
+  // 컴파일러 어휘를 만들 때 쓰지 않은 모양의 스키마: 음악 서비스
+  const music: SystemSchema = markSensitive({
+    system: 'music',
+    source: 'postgres',
+    constraints: [],
+    collections: [
+      { name: 'genre', primaryKey: 'genre_id', fields: [{ name: 'genre_id', type: 'integer', nullable: false }, { name: 'name', type: 'string', nullable: true }] },
+      { name: 'track', primaryKey: 'track_id', fields: [{ name: 'track_id', type: 'integer', nullable: false }, { name: 'name', type: 'string', nullable: false }, { name: 'genre_id', type: 'integer', nullable: true, ref: { collection: 'genre', field: 'genre_id' }, refEnforced: true }, { name: 'milliseconds', type: 'integer', nullable: false }] },
+      { name: 'playlist', primaryKey: 'playlist_id', fields: [{ name: 'playlist_id', type: 'integer', nullable: false }, { name: 'name', type: 'string', nullable: true }, { name: 'curator', type: 'string', nullable: true }, { name: 'plays', type: 'integer', nullable: true }] },
+      { name: 'playlist_track', primaryKey: 'playlist_id', fields: [{ name: 'playlist_id', type: 'integer', nullable: false, ref: { collection: 'playlist', field: 'playlist_id' }, refEnforced: true }, { name: 'track_id', type: 'integer', nullable: false, ref: { collection: 'track', field: 'track_id' }, refEnforced: true }] },
+      { name: 'quarterly_reports', primaryKey: 'id', fields: [{ name: 'id', type: 'integer', nullable: false }, { name: 'title', type: 'string', nullable: false }, { name: 'body', type: 'string', nullable: true }] },
+    ],
+  });
+
+  it('recognises lookup tables and join tables by structure, not by name', () => {
+    const g = compileHeuristic(music);
+    const kind = (c: string) => g.kinds.find((k) => k.collection === c)!;
+    expect(kind('genre')).toMatchObject({ sprite: 'signpost', title: '분류 표지판' });
+    expect(kind('track')).toMatchObject({ sprite: 'theater', title: '극장(track)' }); // playlist 도 극장이라 이름으로 구분
+    // 연결표는 두 곳 사이를 오가는 주민이 되고, 무엇과 무엇을 잇는지 이름에 적힌다
+    expect(kind('playlist_track')).toMatchObject({ archetype: 'npc', title: 'playlist·track 연결' });
+    expect(kind('playlist_track').route).toEqual({ from: 'playlist_id', to: 'track_id' });
+    expect(verifyGrammar(g, music, { numRuns: 20 }).ok).toBe(true);
+  });
+
+  it('matches short words only at word boundaries', () => {
+    const g = compileHeuristic(music);
+    // 'reports' 안의 'port' 는 항구(역)가 아니다
+    expect(g.kinds.find((k) => k.collection === 'quarterly_reports')!.sprite).not.toBe('station');
   });
 });
 

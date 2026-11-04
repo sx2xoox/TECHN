@@ -18,6 +18,8 @@ import {
   CREATED_RE,
   CROWD_RE,
   DEFAULT_PLACE,
+  EVENT_PLACE,
+  LOOKUP_PLACE,
   DEFAULT_WALKER,
   ENUM_RE,
   FIRE_RE,
@@ -51,6 +53,20 @@ function isNumeric(f: FieldSchema) {
   return f.type === 'integer' || f.type === 'number';
 }
 
+/** 서로 다른 두 곳을 잇기만 하는 연결표(예: film_actor, playlist_track) */
+export function isJoin(c: CollectionSchema): boolean {
+  const targets = new Set(c.fields.filter((f) => f.ref && f.ref.collection !== c.name).map((f) => f.ref!.collection));
+  const rest = c.fields.filter((f) => !f.ref && f.name !== c.primaryKey && f.type !== 'timestamp');
+  return targets.size === 2 && rest.length <= 2;
+}
+
+/** 다른 테이블이 가리키는, 이름 하나 남짓 담은 작은 기준표(예: genre, category, language) */
+export function isLookup(c: CollectionSchema, schema: SystemSchema): boolean {
+  const refsIn = schema.collections.some((o) => o.name !== c.name && o.fields.some((f) => f.ref?.collection === c.name));
+  const rest = c.fields.filter((f) => f.name !== c.primaryKey && !f.ref && f.type !== 'timestamp');
+  return refsIn && rest.length >= 1 && rest.length <= 2 && rest.some((f) => f.type === 'string') && (c.rowCountHint === undefined || c.rowCountHint <= 300);
+}
+
 function classify(c: CollectionSchema, schema: SystemSchema): Role {
   const refsOut = c.fields.filter((f) => f.ref && f.ref.collection !== c.name).length;
   const refsIn = schema.collections.reduce(
@@ -60,7 +76,7 @@ function classify(c: CollectionSchema, schema: SystemSchema): Role {
   const hasTime = c.fields.some((f) => f.type === 'timestamp');
   const hasStatus = c.fields.some((f) => f.type === 'string' && f.enumValues && f.enumValues.length > 0);
   const numericCount = c.fields.filter((f) => isNumeric(f) && f.name !== c.primaryKey && !f.ref).length;
-  if (refsOut >= 1 && refsIn === 0 && (hasTime || hasStatus)) return 'npc';
+  if (refsOut >= 1 && refsIn === 0 && (hasTime || hasStatus || isJoin(c) || WALKER_GROUPS.some((g) => g.re.test(c.name)))) return 'npc';
   if ((c.rowCountHint === 1 || LANDMARK_RE.test(c.name)) && numericCount >= 1 && refsIn === 0) return 'landmark';
   return 'building';
 }
@@ -109,13 +125,20 @@ function planKind(c: CollectionSchema, role: Role, schema: SystemSchema, roles: 
     const g = WALKER_GROUPS.find((w) => w.re.test(c.name)) ?? DEFAULT_WALKER;
     sprite = g.sprite;
     title = g.title;
+    if (g === DEFAULT_WALKER && isJoin(c)) {
+      // 연결표: 두 곳 사이를 오가는 주민 — 무엇과 무엇을 잇는지를 이름에 적는다
+      const [a, b] = [...new Set(c.fields.filter((f) => f.ref && f.ref.collection !== c.name).map((f) => f.ref!.collection))];
+      title = `${a}·${b} 연결`;
+    }
     region = REGIONS.market;
   } else if (role === 'landmark') {
     sprite = 'townhall';
     title = '시청';
     region = REGIONS.plaza;
   } else {
-    const g = PLACE_GROUPS.find((p) => p.re.test(c.name)) ?? DEFAULT_PLACE;
+    const g =
+      PLACE_GROUPS.find((p) => p.re.test(c.name)) ??
+      (WALKER_GROUPS.some((w) => w.re.test(c.name)) ? EVENT_PLACE : isLookup(c, schema) ? LOOKUP_PLACE : DEFAULT_PLACE);
     sprite = g.sprite;
     title = g.title;
     region = g.region;
@@ -128,6 +151,9 @@ function planKind(c: CollectionSchema, role: Role, schema: SystemSchema, roles: 
   // 1) 참조 필드: NPC는 경로, 건물은 숨김
   const refs = fields.filter((f) => f.ref);
   if (role === 'npc') {
+    // 연결표는 복합 기본키의 첫 칸이 곧 참조인 경우가 많다(예: playlist_track.playlist_id): 경로에는 쓸 수 있다
+    const pkRef = c.fields.find((f) => f.name === c.primaryKey && f.ref);
+    if (pkRef) refs.unshift(pkRef);
     const toPlace = (f: FieldSchema) => roles.get(f.ref!.collection) !== 'npc';
     const people = refs.find((f) => toPlace(f) && /(customer|user|member|patient|student|person|owner|sender|author|client|account|from)/i.test(f.name + f.ref!.collection));
     const others = refs.filter((f) => f !== people && toPlace(f));
