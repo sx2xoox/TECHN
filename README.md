@@ -164,11 +164,30 @@ REAL_PG_URL=postgres://<사용자>@127.0.0.1:5432 npm run bench:real -- --shots 
 npm run build && npm run study
 ```
 
-참가자는 `http://127.0.0.1:4100/study` 를 엽니다. 실험 진행자는 아래로 분석합니다.
+참가자는 `http://127.0.0.1:4100/study` 를 엽니다. 예비 실험이면 `/study?pilot=1` 이고, 이 기록은 본 분석에서 자동으로 빠집니다. 콘솔에 나오는 **진행자 화면**(`/study/admin?token=…`)에서는 아래를 할 수 있습니다.
+
+- 진행 상황과 조건 순서를 봅니다.
+- 사전 기준에 따른 **제외**를 사유와 함께 남깁니다.
+- 참가자가 요청하면 **철회**(기록 삭제)합니다.
+- 보고서를 보고 CSV 를 내려받습니다.
+
+원격으로 할 때는 `HOST=0.0.0.0 STUDY_ACCESS_CODE=<코드>` 로 엽니다. 외부 주소는 참가 코드가 없으면 열리지 않습니다.
 
 ```bash
-npm run study:analyze -- data/study --out report.md
+npm run study:analyze -- data/study --out report.md --csv trials.csv
 ```
+
+```bash
+npm run study:power -- 0.35 0.5
+```
+
+진행자용 문서 [`docs/study/`](docs/study/README.md) 에는 다음이 있습니다.
+
+- 연구 계획서(진행자 대본·분석 계획·제외 기준)
+- 사전 등록 양식(미리 채움)
+- 모집 공고
+- 인쇄용 동의서
+- 회차 점검표
 
 **설계**
 
@@ -200,13 +219,14 @@ npm run study:analyze -- data/study --out report.md
 - 기록은 진행자 컴퓨터의 `data/study/*.jsonl` 에만 남으며, 이 폴더는 git 에서 제외되어 있습니다.
 - 논문 등으로 발표하려면 소속 기관의 연구윤리(IRB) 심의를 먼저 받으세요. 동의문은 출발점일 뿐입니다.
 
-**표본 크기(대략적인 계획치)**: 짝지은 비교에서 α=0.05, 검정력 0.8 기준으로 셉니다.
+**표본 크기**: `npm run study:power` 가 검정력을 모의실험으로 셉니다. 참된 시간 비율 0.35, 참가자별 흩어짐(로그 표준편차) 0.5 를 가정한 결과는 아래와 같습니다.
 
-- 효과가 크면(dz≈0.8) 약 16명이 필요합니다.
-- 중간이면(dz≈0.5) 약 36명이 필요합니다.
-- 분석은 12명 미만이면 결론을 내리지 말라는 경고를 냅니다. 모집 인원과 주 결과는 실험 **전에** 정해 두세요(사전 등록).
+- "차이가 있다"(윌콕슨 p<0.05)는 약 8명이면 80% 이상 나옵니다.
+- "50% 이상 단축"(구간 상한 ≤ 0.5)이라는 KPI 판정은 약 **24명**이 필요합니다.
+- 가정은 예비 실험으로 바꿔 넣으세요. 분석은 12명 미만이면 결론을 내리지 말라는 경고를 냅니다.
+- 모집 인원과 주 결과는 실험 **전에** 정해 두세요(사전 등록).
 
-**상태**: 도구는 동작합니다. CI 에서 봇 3명이 실제 화면을 끝까지 진행하며 표의 행과 캔버스 위 건물을 직접 누릅니다(`npm run study:selftest`). 하지만 **실제 참가자 실험은 아직 하지 않았습니다.** 봇은 두 조건에서 똑같이 행동하므로 자가 시험 수치는 실험 결과가 아닙니다.
+**상태**: 도구는 동작합니다. CI 에서 봇 3명(1명은 예비 참가자)이 실제 화면을 끝까지 진행하며 표의 행과 캔버스 위 건물을 직접 누릅니다. 진행자 화면도 함께 확인합니다(`npm run study:selftest`). 하지만 **실제 참가자 실험은 아직 하지 않았습니다.** 봇은 두 조건에서 똑같이 행동하므로 자가 시험 수치는 실험 결과가 아닙니다.
 
 ---
 
@@ -367,7 +387,7 @@ npm run bench:lab
 npm run study:selftest
 ```
 
-- `npm test`: 단위·통합 테스트 71개입니다. 실제 시스템 테스트 3개는 환경변수로 켭니다(아래).
+- `npm test`: 단위·통합 테스트 75개입니다. 실제 시스템 테스트 3개는 환경변수로 켭니다(아래).
 - `npm run bench:compile`: 컴파일러 KPI 를 잽니다.
 - `npm run e2e`: 실제 브라우저로 데모 시나리오를 처음부터 끝까지 수행합니다.
 - `npm run bench:latency`: 상태 변화가 세계에 반영되기까지의 지연을 폴링/푸시 두 방식으로 잽니다.
@@ -429,7 +449,8 @@ packages/client     PixiJS 렌더러 · 한국어 UI · 실험 화면(study.html
 packages/assets     PixelLab 에셋 파이프라인
 apps/demo-shop      경쟁 조건 버그가 있는 데모 쇼핑몰 · 복제 DB 샌드박스
 examples/           연결 설정 예시 · 예제 어댑터(Claude Code 세션) · 합성 세션 기록기
-scripts/            demo · demo-agent · e2e · bench-(compile|latency|lab|real-schemas|heldout-schemas) · study(·analyze·selftest)
+scripts/            demo · demo-agent · e2e · bench-(compile|latency|lab|real-schemas|heldout-schemas) · study(·analyze·selftest·power)
+docs/study/         사용자 실험 진행자 문서(계획서·사전 등록·모집·동의서·점검표)
 ```
 
 요구 사항: Node.js 22.13 이상(`node:sqlite` 사용).
