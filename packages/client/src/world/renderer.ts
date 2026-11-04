@@ -1,5 +1,5 @@
-import { Application, ColorMatrixFilter, Container, CullerPlugin, extensions, Graphics, Sprite, Texture, TilingSprite, TextureStyle } from 'pixi.js';
-import type { WorldEntity, WorldGrammar, WorldState } from '@isomorph/core';
+import { Application, ColorMatrixFilter, Container, CullerPlugin, extensions, Graphics, Rectangle, Sprite, Texture, TilingSprite, TextureStyle } from 'pixi.js';
+import { PALETTE, type ColorName, type WorldEntity, type WorldGrammar, type WorldState } from '@isomorph/core';
 import { canvas, drawTile, type Ground } from '../pixel/sprites.ts';
 import { TextureBank } from '../pixel/textures.ts';
 import { computeLayout, pathBetween, plotFor, T, type KindCount, type Plot, type TownLayout } from './layout.ts';
@@ -8,7 +8,7 @@ import { BuildingView, NpcView, pixelText, type ViewContext } from './views.ts';
 extensions.add(CullerPlugin);
 TextureStyle.defaultOptions.scaleMode = 'nearest';
 
-const ZOOMS = [0.2, 0.3, 0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3, 4, 5];
+const ZOOMS = [0.05, 0.08, 0.12, 0.2, 0.3, 0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3, 4, 5];
 
 export interface TownCallbacks {
   onSelect(id: string | null): void;
@@ -29,7 +29,7 @@ export class Town {
   private layout: TownLayout | null = null;
   private grammar: WorldGrammar | null = null;
   private world: WorldState | null = null;
-  private zoomIndex = 7;
+  private zoomIndex = 10;
   private time = 0;
   private selected: string | null = null;
   private preview: BuildingView | null = null;
@@ -38,6 +38,11 @@ export class Town {
   private ctx: ViewContext = { bank: this.bank, showLabels: true };
   private dragging: { x: number; y: number; cx: number; cy: number; moved: boolean } | null = null;
   private speed = 1;
+  /** 시맨틱 줌: 멀리서 보면 구역 요약으로 바뀐다 */
+  private lod = false;
+  private summaryLayer = new Container();
+  private pendingWorld: WorldState | null = null;
+  static readonly LOD_ZOOM = 0.5;
 
   constructor(private cb: TownCallbacks) {}
 
@@ -46,7 +51,8 @@ export class Town {
     el.appendChild(this.app.canvas);
     this.buildings.sortableChildren = true;
     this.npcs.sortableChildren = true;
-    this.camera.addChild(this.groundLayer, this.labelsLayer, this.buildings, this.npcs, this.overlay);
+    this.camera.addChild(this.groundLayer, this.labelsLayer, this.buildings, this.npcs, this.summaryLayer, this.overlay);
+    this.summaryLayer.visible = false;
     this.app.stage.addChild(this.camera);
     this.sepia.sepia(false);
     this.previewTag.anchor.set(0.5, 1);
@@ -81,7 +87,7 @@ export class Town {
     this.app.ticker.add((tk) => {
       const dt = Math.min(0.1, tk.deltaMS / 1000);
       this.time += dt;
-      for (const v of this.views.values()) v.animate(this.time, dt, this.speed);
+      if (!this.lod) for (const v of this.views.values()) v.animate(this.time, dt, this.speed);
       this.preview?.animate(this.time, dt);
       if (this.preview) this.preview.alpha = 0.55 + 0.3 * Math.sin(this.time * 5);
     });
@@ -143,7 +149,26 @@ export class Town {
     this.updateLabels();
   }
 
+  /** 확대 수준에 따라 개체 표시 ↔ 구역 요약 전환 */
+  private updateLod() {
+    const want = ZOOMS[this.zoomIndex] <= Town.LOD_ZOOM && this.views.size > 0;
+    if (want !== this.lod) {
+      this.lod = want;
+      // 숨긴 층은 렌더링·컬링 순회에서도 빠지게 renderable 까지 끈다
+      this.buildings.visible = this.buildings.renderable = !want;
+      this.npcs.visible = this.npcs.renderable = !want;
+      this.summaryLayer.visible = want;
+      if (!want && this.pendingWorld) {
+        const w = this.pendingWorld;
+        this.pendingWorld = null;
+        this.setWorld(w);
+      }
+    }
+    if (this.lod) this.renderSummaries();
+  }
+
   private updateLabels() {
+    this.updateLod();
     const on = ZOOMS[this.zoomIndex] >= 1.25 && this.views.size < 1500;
     if (on === this.ctx.showLabels) return;
     this.ctx.showLabels = on;
@@ -223,6 +248,12 @@ export class Town {
       }
     }
 
+    if (this.lod) {
+      // 멀리서 볼 때는 개별 개체를 갱신하지 않고 요약만 다시 계산한다(가까이 가면 최신 상태로 한 번에 반영)
+      this.pendingWorld = world;
+      this.renderSummaries();
+      return;
+    }
     const seen = new Set<string>();
     const byId = new Map(world.entities.map((e) => [e.id, e] as const));
     let speed = 1;
@@ -246,7 +277,9 @@ export class Town {
           this.views.set(e.id, v);
         }
         v.zIndex = plot.y;
-        v.setEntity(e);
+        // 화면 밖 건물은 상태만 맡겨 두고, 화면에 들어올 때 그린다(대규모 세계의 갱신 비용 절감)
+        if (v instanceof BuildingView && v.culled && this.selected !== e.id && v.hasEntity) v.defer(e);
+        else v.setEntity(e);
       }
     }
     this.speed = speed;
@@ -275,6 +308,102 @@ export class Town {
       }
     }
     if (this.selected) this.select(this.selected);
+    this.updateLabels();
+  }
+
+  /** 구역 요약: 종류별 개수, 상태 색 분포, 불 꺼짐·불길·법칙 위반 수 */
+  private renderSummaries() {
+    const L = this.layout;
+    const g = this.grammar;
+    const w = this.pendingWorld ?? this.world;
+    for (const c of [...this.summaryLayer.children]) c.destroy({ children: true });
+    if (!L || !g || !w) return;
+    const z = ZOOMS[this.zoomIndex];
+    const ui = 1 / z; // 화면에서 일정한 글자 크기
+    let walkers = 0;
+    const byDistrict = new Map<number, WorldEntity[]>();
+    for (const e of w.entities) {
+      if (e.archetype === 'npc') {
+        walkers++;
+        continue;
+      }
+      const di = L.kindRegion.get(e.kind);
+      if (di === undefined) continue;
+      const list = byDistrict.get(di) ?? [];
+      list.push(e);
+      byDistrict.set(di, list);
+    }
+    L.districts.forEach((d, di) => {
+      const ents = byDistrict.get(di) ?? [];
+      const box = new Container();
+      const bg = new Graphics().rect(d.x + T, d.y, d.w - 2 * T, d.h).fill({ color: 0x1c1722, alpha: 0.72 });
+      const anomalies = ents.filter((e) => e.anomalies.length).length;
+      if (anomalies) bg.rect(d.x + T, d.y, d.w - 2 * T, d.h).stroke({ color: 0xff3b3b, width: 3 * ui, alpha: 0.9 });
+      box.addChild(bg);
+      // 상태 색 분포 막대
+      const tints = new Map<string, number>();
+      for (const e of ents) if (typeof e.visual.tint === 'string') tints.set(e.visual.tint, (tints.get(e.visual.tint) ?? 0) + 1);
+      const total = [...tints.values()].reduce((a, b) => a + b, 0);
+      const barW = d.w - 4 * T;
+      const barH = 8 * ui;
+      const barY = d.y + d.h - barH - 6 * ui;
+      let x = d.x + 2 * T;
+      if (total) {
+        for (const [c, n] of [...tints].sort((a, b) => b[1] - a[1])) {
+          const wpx = (n / total) * barW;
+          bg.rect(x, barY, wpx, barH).fill({ color: parseInt((PALETTE[c as ColorName]?.hex ?? '#8a8f98').slice(1), 16) });
+          x += wpx;
+        }
+      }
+      const kinds = new Map<string, number>();
+      for (const e of ents) kinds.set(e.kind, (kinds.get(e.kind) ?? 0) + 1);
+      const dark = ents.filter((e) => e.visual.lit === false).length;
+      const fire = ents.filter((e) => typeof e.visual.fire === 'number' && e.visual.fire > 0).length;
+      const lines = [
+        d.region.title,
+        ...[...kinds].map(([k, n]) => `${g.kinds.find((x) => x.id === k)?.title ?? k} ${n.toLocaleString('ko-KR')}`),
+        ...(dark ? [`불 꺼짐 ${dark.toLocaleString('ko-KR')}`] : []),
+        ...(fire ? [`불길 ${fire.toLocaleString('ko-KR')}`] : []),
+      ];
+      let ty = d.y + 6 * ui;
+      lines.forEach((line, i) => {
+        const scale = ui * (i === 0 ? 1.6 : 1.3);
+        const t = pixelText(line, i === 0 ? '#f2c94c' : '#f3ede2', i === 0 ? 11 : 10);
+        t.scale.set(scale);
+        t.position.set(d.x + 2 * T, ty);
+        ty += (i === 0 ? 17 : 15) * scale;
+        box.addChild(t);
+      });
+      if (anomalies) {
+        const t = pixelText(`⚠ 법칙 위반 ${anomalies.toLocaleString('ko-KR')}`, '#ff6b57', 10);
+        t.scale.set(ui * 1.4);
+        t.position.set(d.x + 2 * T, barY - 22 * ui);
+        box.addChild(t);
+      }
+      box.eventMode = 'static';
+      box.cursor = 'zoom-in';
+      box.hitArea = new Rectangle(d.x, d.y, d.w, d.h);
+      box.on('pointertap', (ev) => {
+        ev.stopPropagation();
+        this.zoomToDistrict(di);
+      });
+      this.summaryLayer.addChild(box);
+    });
+    if (walkers) {
+      const t = pixelText(`길 위의 주민 ${walkers.toLocaleString('ko-KR')}`, '#f3ede2', 10, '#1c1722');
+      t.scale.set(ui * 1.3);
+      t.position.set(2 * T, L.mainRoadY + T);
+      this.summaryLayer.addChild(t);
+    }
+  }
+
+  private zoomToDistrict(di: number) {
+    const d = this.layout?.districts[di];
+    if (!d) return;
+    this.zoomIndex = ZOOMS.indexOf(1.25);
+    const z = ZOOMS[this.zoomIndex];
+    this.camera.scale.set(z);
+    this.camera.position.set(Math.round(this.app.screen.width / 2 - (d.x + Math.min(d.w, this.app.screen.width / z) / 2) * z), Math.round(this.app.screen.height / 2 - (d.y + Math.min(d.h, this.app.screen.height / z) / 2) * z));
     this.updateLabels();
   }
 

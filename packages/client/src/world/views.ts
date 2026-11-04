@@ -135,8 +135,19 @@ export class BuildingView extends EntityView {
   }
 
   private sig = '';
+  private deferred: WorldEntity | null = null;
+
+  get hasEntity() {
+    return !!this.entity;
+  }
+
+  /** 화면 밖일 때: 최신 상태만 기억해 둔다 */
+  defer(e: WorldEntity) {
+    this.deferred = e;
+  }
 
   setEntity(e: WorldEntity) {
+    this.deferred = null;
     // 바뀐 것이 없으면 다시 그리지 않는다(대규모 세계에서 매 관측마다 1만 개를 다시 그리는 비용 절약)
     const sig = JSON.stringify([e.visual, e.anomalies, e.outOfRange, e.label, e.sprite, this.ctx.showLabels]);
     if (sig === this.sig) {
@@ -292,6 +303,7 @@ export class BuildingView extends EntityView {
   }
 
   animate(t: number, dt: number) {
+    if (this.deferred && !this.culled) this.setEntity(this.deferred);
     if (this.idle || (this.culled && !this.selected)) {
       this.drawOutline(t);
       return;

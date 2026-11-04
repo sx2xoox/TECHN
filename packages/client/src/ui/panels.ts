@@ -108,6 +108,7 @@ export class LegendPanel {
         h('strong', null, '법칙 목록'),
         h('ul', null, m.grammar.invariants.filter((i) => i.status !== 'dismissed').map((i) => h('li', null, invariantBadge(i), ` ${i.title}`))),
       ),
+      h('p', { class: 'muted small' }, '멀리서 보면(0.5배 이하) 개별 건물 대신 구역 요약으로 바뀝니다: 종류별 개수, 상태 색 분포 막대, 불 꺼짐·불길·법칙 위반 수. 요약을 누르면 그 구역으로 들어갑니다.'),
       h('p', { class: 'muted small' }, '장식: 나무·분수·길·바닥 무늬는 데이터와 무관합니다. 주민의 걷는 경로와 걸음은 연출이며, 의미는 색(상태)과 출발/도착 건물에만 있습니다.'),
     );
   }
