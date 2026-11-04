@@ -145,6 +145,10 @@ function planKind(c: CollectionSchema, role: Role, schema: SystemSchema, roles: 
   }
 
   const fields = c.fields.filter((f) => f.name !== c.primaryKey);
+  // 이름표: name·title 같은 이름이 먼저, 없으면 first_name·album_title 처럼 _name·_title 로 끝나는 칸
+  const labelCandidate =
+    fields.find((f) => !f.sensitive && f.type === 'string' && LABEL_RE.test(f.name)) ??
+    fields.find((f) => !f.sensitive && f.type === 'string' && /(^|_)(name|title)$/i.test(f.name));
   // 색깔(tint)은 '상태'를 뜻하는 범주형 필드가 우선 차지한다(값이 하나뿐인 필드는 구분할 것이 없어 제외)
   const enumish = fields.filter((f) => f.type === 'string' && !f.ref && !f.sensitive && (f.enumValues?.length ?? 0) > 1);
   const tintField = (enumish.find((f) => ENUM_RE.test(f.name)) ?? enumish.find((f) => f.enumValues!.length <= 8))?.name;
@@ -178,7 +182,7 @@ function planKind(c: CollectionSchema, role: Role, schema: SystemSchema, roles: 
       continue;
     }
     const n = f.name;
-    if (!labelField && f.type === 'string' && LABEL_RE.test(n)) {
+    if (!labelField && n === labelCandidate?.name) {
       labelField = n;
       continue;
     }

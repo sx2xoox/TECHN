@@ -3,6 +3,10 @@ import { PALETTE, type AnomalyKind, type ColorName, type WorldEntity } from '@is
 import type { TextureBank } from '../pixel/textures.ts';
 import { pathLength, pointAt, T, type Plot, type Point } from './layout.ts';
 
+/** 이름표·간판이 옆 건물과 겹치지 않게 줄인다(전체 값은 말풍선·인스펙터에 있다) */
+const LABEL_MAX = 11;
+const shorten = (s: string) => (s.length > LABEL_MAX ? `${s.slice(0, LABEL_MAX - 1)}…` : s);
+
 export const LABEL_FONT = 'Galmuri9';
 
 export function pixelText(text: string, color = '#2a1f2d', size = 10, stroke?: string): Text {
@@ -233,12 +237,13 @@ export class BuildingView extends EntityView {
     }
 
     // 이름표 & 간판
-    this.nameText.text = e.label;
+    // 긴 이름은 옆 건물과 겹치지 않게 줄인다(전체 이름은 말풍선·인스펙터에서 보인다)
+    this.nameText.text = shorten(e.label);
     this.nameText.anchor.set(0.5, 0);
     this.nameText.position.set(Math.round(cx), Math.round(baseY + 1));
     this.nameText.visible = this.ctx.showLabels;
     const sign = typeof e.visual.sign === 'string' ? e.visual.sign : '';
-    this.signText.text = sign;
+    this.signText.text = shorten(sign);
     this.signText.anchor.set(0.5, 1);
     this.signText.position.set(Math.round(cx), Math.round(this.sprite.y - (this.flag.visible ? 9 : 1)));
     this.signText.visible = this.ctx.showLabels && !!sign;

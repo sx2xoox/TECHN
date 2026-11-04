@@ -96,6 +96,18 @@ for (const t of targets) {
       await page.waitForFunction('window.__iso?.state?.world?.entities?.length > 0', null, { timeout: 30_000 });
       await page.waitForTimeout(1500);
       await page.screenshot({ path: path.join(shotsDir!, `${t.db}.png`) });
+      // 가까이: 일반 은유가 아닌 첫 건물 종류로 다가가서 한 장 더
+      const focused = await page.evaluate(`(() => {
+        const s = window.__iso.state; const g = s.hello.grammar;
+        const k = g.kinds.find((k) => k.archetype === 'building' && !/^(건물|주민)/.test(k.title));
+        const e = k && s.world.entities.find((e) => e.kind === k.id);
+        if (e) window.__iso.town.focus(e.id);
+        return !!e;
+      })()`);
+      if (focused) {
+        await page.waitForTimeout(1200);
+        await page.screenshot({ path: path.join(shotsDir!, `${t.db}-zoom.png`) });
+      }
       await page.close();
       await srv.close();
     }
