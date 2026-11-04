@@ -94,7 +94,11 @@ export function parseRailsSchema(system: string, src: string): SystemSchema {
 }
 
 const GENERIC = /^(건물|주민)(\(|$)/;
+type Basis = 'name' | 'structure' | 'fields' | 'generic' | 'llm' | 'manual';
+/** 은유 근거: 컴파일러가 적어 둔 것(없으면 제목으로 추정 — 이전 판과 비교할 때) */
+const basisOf = (k: { title: string; metaphorBasis?: Basis }): Basis => k.metaphorBasis ?? (GENERIC.test(k.title) ? 'generic' : 'name');
 const rows: Record<string, string | number | boolean>[] = [];
+const byBasis: Record<string, number> = {};
 let total = 0;
 let generic = 0;
 let lawful = 0;
@@ -105,7 +109,8 @@ for (const file of fs.readdirSync(dir).filter((f) => f.endsWith('.schema')).sort
   const first = verifyGrammar(compileHeuristic(schema), schema, { numRuns: 15 });
   const result = await compile(schema, { mode: 'heuristic', numRuns: 15 });
   const kinds = result.grammar.kinds;
-  const g = kinds.filter((k) => GENERIC.test(k.title)).length;
+  const g = kinds.filter((k) => basisOf(k) === 'generic').length;
+  for (const k of kinds) byBasis[basisOf(k)] = (byBasis[basisOf(k)] ?? 0) + 1;
   total += kinds.length;
   generic += g;
   if (result.report.ok) lawful++;
@@ -121,5 +126,7 @@ for (const file of fs.readdirSync(dir).filter((f) => f.endsWith('.schema')).sort
   });
 }
 console.table(rows);
-console.log(`\n보류 스키마 ${rows.length}종: 렌즈 법칙 통과 ${lawful}/${rows.length} · 일반 은유('건물'·'주민')로 남은 종류 ${generic}/${total} = ${((generic / Math.max(total, 1)) * 100).toFixed(0)}%`);
-if (jsonOut) fs.writeFileSync(jsonOut, JSON.stringify({ rows, total, generic, lawful }, null, 2));
+const pct = (n: number) => `${((n / Math.max(total, 1)) * 100).toFixed(0)}%`;
+console.log(`\n보류 스키마 ${rows.length}종: 렌즈 법칙 통과 ${lawful}/${rows.length} · 일반 은유('건물'·'주민')로 남은 종류 ${generic}/${total} = ${pct(generic)}`);
+console.log(`은유 근거: 이름 사전 ${byBasis.name ?? 0}(${pct(byBasis.name ?? 0)}) · 구조 ${byBasis.structure ?? 0}(${pct(byBasis.structure ?? 0)}) · 필드 특징 ${byBasis.fields ?? 0}(${pct(byBasis.fields ?? 0)}) · 근거 없음 ${byBasis.generic ?? 0}(${pct(byBasis.generic ?? 0)})`);
+if (jsonOut) fs.writeFileSync(jsonOut, JSON.stringify({ rows, total, generic, lawful, byBasis }, null, 2));

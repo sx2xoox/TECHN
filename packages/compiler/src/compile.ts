@@ -120,6 +120,8 @@ export async function compile(schema: SystemSchema, opts: CompileOptions = {}): 
     for (let i = 0; i < maxRounds; i++) {
       const { draft, assistantContent } = await model.complete(systemPrompt(), turns);
       grammar = draftToGrammar(draft, schema);
+      // 은유를 고른 근거: 모델이 골랐다(이름·구조·필드 규칙과 구분해 정직하게 표시)
+      for (const k of grammar.kinds) k.metaphorBasis = 'llm';
       report = verifyGrammar(grammar, schema, { numRuns: opts.numRuns, seed: opts.seed });
       const round = summarizeRound(rounds.length + 1, 'llm', report);
       rounds.push(round);

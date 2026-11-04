@@ -79,6 +79,27 @@ describe('metaphors for unfamiliar schemas', () => {
     expect(verifyGrammar(g, music, { numRuns: 20 }).ok).toBe(true);
   });
 
+  it('falls back to what a table holds, then to how central it is, and records why', () => {
+    const s: SystemSchema = markSensitive({
+      system: 'odd-names',
+      source: 'postgres',
+      constraints: [],
+      collections: [
+        { name: 'zorbs', primaryKey: 'id', fields: [{ name: 'id', type: 'integer', nullable: false }, { name: 'label', type: 'string', nullable: false }, { name: 'balance', type: 'number', nullable: false }] },
+        { name: 'quux', primaryKey: 'id', fields: [{ name: 'id', type: 'integer', nullable: false }, { name: 'name', type: 'string', nullable: false }, { name: 'flavor', type: 'string', nullable: true }, { name: 'weight', type: 'integer', nullable: true }] },
+        ...['a', 'b', 'c'].map((n) => ({ name: `blip_${n}`, primaryKey: 'id', fields: [{ name: 'id', type: 'integer' as const, nullable: false }, { name: 'quux_id', type: 'integer' as const, nullable: false, ref: { collection: 'quux', field: 'id' }, refEnforced: true }, { name: 'body', type: 'string' as const, nullable: true }, { name: 'created_at', type: 'timestamp' as const, nullable: false }] })),
+        { name: 'thingamajigs', primaryKey: 'id', fields: [{ name: 'id', type: 'integer', nullable: false }, { name: 'name', type: 'string', nullable: false }, { name: 'weight', type: 'integer', nullable: true }] },
+      ],
+    });
+    const g = compileHeuristic(s);
+    const kind = (c: string) => g.kinds.find((k) => k.collection === c)!;
+    expect(kind('zorbs')).toMatchObject({ sprite: 'bank', metaphorBasis: 'fields' }); // balance → 은행
+    expect(kind('quux')).toMatchObject({ sprite: 'office', title: '회관', metaphorBasis: 'structure' }); // 세 곳이 가리킴
+    expect(kind('blip_a')).toMatchObject({ archetype: 'npc', sprite: 'courier', metaphorBasis: 'fields' }); // body → 편지 배달부
+    expect(kind('thingamajigs')).toMatchObject({ metaphorBasis: 'generic' }); // 근거가 없으면 솔직하게 일반 은유
+    expect(verifyGrammar(g, s, { numRuns: 20 }).ok).toBe(true);
+  });
+
   it('matches short words only at word boundaries', () => {
     const g = compileHeuristic(music);
     // 'reports' 안의 'port' 는 항구(역)가 아니다
@@ -91,7 +112,8 @@ describe('draft conversion', () => {
     for (const s of BENCH_SCHEMAS) {
       const g = compileHeuristic(s);
       const back = draftToGrammar(grammarToDraft(g), s);
-      expect(back.kinds).toEqual(g.kinds.map((k) => ({ ...k })));
+      // 은유 근거(metaphorBasis)는 출처 기록이라 LLM 초안 형식에는 싣지 않는다
+      expect(back.kinds).toEqual(g.kinds.map(({ metaphorBasis: _basis, ...k }) => k));
       expect(back.affordances).toEqual(g.affordances.map(({ inverseOf: _ignored, ...a }) => a));
       expect(verifyGrammar(back, s, { numRuns: 30 }).ok).toBe(true);
     }

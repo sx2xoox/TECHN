@@ -50,6 +50,27 @@ export const LOOKUP_PLACE: PlaceGroup = { re: /.*/, sprite: 'signpost', title: '
 /** 사건처럼 이름 붙었지만 다른 행이 가리키는 곳(예: 주문 → 주문 상세): 접수처 */
 export const EVENT_PLACE: PlaceGroup = { re: /.*/, sprite: 'post', title: '접수처', region: R.market };
 
+/**
+ * 필드 특징: 테이블 이름이 낯설어도 '무엇을 담고 있나' 로 고른다(이름 사전 다음, 일반 은유 전에).
+ * 필드 이름 하나가 아니라 같은 묶음의 필드가 있는지를 본다.
+ */
+export interface FieldSignature {
+  id: 'money' | 'text' | 'geo' | 'file' | 'job' | 'person';
+  re: RegExp;
+  place: PlaceGroup;
+  walker: WalkerGroup;
+}
+export const FIELD_SIGNATURES: FieldSignature[] = [
+  { id: 'job', re: /^(started_at|finished_at|completed_at|failed_at|run_at|scheduled_at|attempts|retries|retry_count|duration(_ms)?|queue|progress)$/i, place: { re: /.*/, sprite: 'factory', title: '작업장', region: R.industrial }, walker: { re: /.*/, sprite: 'robot', title: '일꾼 로봇' } },
+  { id: 'money', re: /^(price|amount|cost|fee|balance|total|subtotal|currency|salary|tax|discount|.*_(price|amount|cents|total))$/i, place: { re: /.*/, sprite: 'bank', title: '은행', region: R.finance }, walker: { re: /.*/, sprite: 'merchant', title: '상인' } },
+  { id: 'geo', re: /^(lat|lng|lon|latitude|longitude|geom|geometry|coordinates|address(_line)?\d?|city|country(_code)?|postal_code|zip(code)?|region)$/i, place: { re: /.*/, sprite: 'signpost', title: '이정표', region: R.plaza }, walker: { re: /.*/, sprite: 'villager', title: '여행자' } },
+  { id: 'file', re: /^(filename|file_name|content_type|byte_size|file_size|mime_type|checksum|attachment.*|.*_file_name|.*_content_type)$/i, place: { re: /.*/, sprite: 'warehouse', title: '보관 창고', region: R.industrial }, walker: { re: /.*/, sprite: 'courier', title: '배달부' } },
+  { id: 'text', re: /^(body|content|message|text|html|markdown|comment|raw|cooked|.*_body|.*_html|.*_markdown)$/i, place: { re: /.*/, sprite: 'library', title: '도서관', region: R.civic }, walker: { re: /.*/, sprite: 'courier', title: '배달부' } },
+  { id: 'person', re: /^(email|first_name|last_name|username|full_name|phone|avatar.*|birth.*|gender)$/i, place: { re: /.*/, sprite: 'house', title: '집', region: R.residential }, walker: { re: /.*/, sprite: 'villager', title: '방문객' } },
+];
+/** 많은 테이블이 가리키는 중심 건물(구조) */
+export const HUB_PLACE: PlaceGroup = { re: /.*/, sprite: 'office', title: '회관', region: R.civic };
+
 export interface WalkerGroup {
   re: RegExp;
   sprite: SpriteKey;

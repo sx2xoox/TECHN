@@ -19,6 +19,8 @@ import {
   CROWD_RE,
   DEFAULT_PLACE,
   EVENT_PLACE,
+  FIELD_SIGNATURES,
+  HUB_PLACE,
   LOOKUP_PLACE,
   DEFAULT_WALKER,
   ENUM_RE,
@@ -121,24 +123,34 @@ function planKind(c: CollectionSchema, role: Role, schema: SystemSchema, roles: 
   let sprite: EntityKind['sprite'];
   let title: string;
   let region: Region;
+  let basis: NonNullable<EntityKind['metaphorBasis']>;
+  // 필드 특징: 같은 묶음의 필드가 하나 이상 있으면(숨김·기본키 제외) 그 묶음의 은유
+  const signature = FIELD_SIGNATURES.find((sig) => c.fields.some((f) => f.name !== c.primaryKey && !f.ref && sig.re.test(f.name)));
   if (role === 'npc') {
-    const g = WALKER_GROUPS.find((w) => w.re.test(c.name)) ?? DEFAULT_WALKER;
+    const named = WALKER_GROUPS.find((w) => w.re.test(c.name));
+    const g = named ?? signature?.walker ?? DEFAULT_WALKER;
     sprite = g.sprite;
     title = g.title;
-    if (g === DEFAULT_WALKER && isJoin(c)) {
+    basis = named ? 'name' : signature ? 'fields' : 'generic';
+    if (!named && isJoin(c)) {
       // 연결표: 두 곳 사이를 오가는 주민 — 무엇과 무엇을 잇는지를 이름에 적는다
       const [a, b] = [...new Set(c.fields.filter((f) => f.ref && f.ref.collection !== c.name).map((f) => f.ref!.collection))];
+      sprite = 'villager';
       title = `${a}·${b} 연결`;
+      basis = 'structure';
     }
     region = REGIONS.market;
   } else if (role === 'landmark') {
     sprite = 'townhall';
     title = '시청';
     region = REGIONS.plaza;
+    basis = 'structure';
   } else {
-    const g =
-      PLACE_GROUPS.find((p) => p.re.test(c.name)) ??
-      (WALKER_GROUPS.some((w) => w.re.test(c.name)) ? EVENT_PLACE : isLookup(c, schema) ? LOOKUP_PLACE : DEFAULT_PLACE);
+    const refsIn = schema.collections.reduce((n, o) => n + (o.name !== c.name ? o.fields.filter((f) => f.ref?.collection === c.name).length : 0), 0);
+    const named = PLACE_GROUPS.find((p) => p.re.test(c.name));
+    const structural = WALKER_GROUPS.some((w) => w.re.test(c.name)) ? EVENT_PLACE : isLookup(c, schema) ? LOOKUP_PLACE : null;
+    const g = named ?? structural ?? signature?.place ?? (refsIn >= 3 ? HUB_PLACE : DEFAULT_PLACE);
+    basis = named ? 'name' : structural ? 'structure' : signature ? 'fields' : g === HUB_PLACE ? 'structure' : 'generic';
     sprite = g.sprite;
     title = g.title;
     region = g.region;
@@ -250,6 +262,7 @@ function planKind(c: CollectionSchema, role: Role, schema: SystemSchema, roles: 
     spritePrompt: '',
     region: region.id,
     ...(labelField ? { labelField } : {}),
+    metaphorBasis: basis,
     ...(route.from || route.to ? { route } : {}),
     ...(recency ? { recency } : {}),
     channels,

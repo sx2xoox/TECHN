@@ -124,6 +124,10 @@ export const EntityKindSchema = z.object({
   /** 명시적으로 세계에 그리지 않는 필드(정직성: 숨긴 것도 숨겼다고 선언) */
   hidden: z.array(z.string()),
   maxEntities: z.number().int().positive().optional(),
+  /**
+   * 은유를 고른 근거(정직성): 이름 사전 · 구조(기준표·연결표·접수처·회관) · 담긴 필드의 특징 · 근거 없음(일반 은유)
+   */
+  metaphorBasis: z.enum(['name', 'structure', 'fields', 'generic', 'llm', 'manual']).optional(),
 });
 
 export const InvariantSchema = z.object({

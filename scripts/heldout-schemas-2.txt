@@ -1,0 +1,12 @@
+# 보류 평가 2차: 은유 규칙(이름·구조·필드 특징)을 고정한 뒤에 처음 받는 스키마. 테이블 이름은 보지 않고 집계만 낸다.
+# 2026-11-04 기본 브랜치 기준.
+fatfreecrm https://raw.githubusercontent.com/fatfreecrm/fat_free_crm/master/db/schema.rb
+whitehall https://raw.githubusercontent.com/alphagov/whitehall/main/db/schema.rb
+rubygems https://raw.githubusercontent.com/rubygems/rubygems.org/master/db/schema.rb
+casa https://raw.githubusercontent.com/rubyforgood/casa/main/db/schema.rb
+human-essentials https://raw.githubusercontent.com/rubyforgood/human-essentials/main/db/schema.rb
+openfoodnetwork https://raw.githubusercontent.com/openfoodfoundation/openfoodnetwork/master/db/schema.rb
+codetriage https://raw.githubusercontent.com/codetriage/CodeTriage/main/db/schema.rb
+publify https://raw.githubusercontent.com/publify/publify/master/db/schema.rb
+otwarchive https://raw.githubusercontent.com/otwcode/otwarchive/master/db/schema.rb
+coursemology https://raw.githubusercontent.com/Coursemology/coursemology2/master/db/schema.rb

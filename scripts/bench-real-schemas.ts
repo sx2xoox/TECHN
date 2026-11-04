@@ -71,7 +71,7 @@ for (const t of targets) {
     const g = rt.grammar;
     if (g) {
       r.kinds = g.kinds.length;
-      r.genericKinds = g.kinds.filter((k) => /^(건물|주민)(\(|$)/.test(k.title)).map((k) => k.collection);
+      r.genericKinds = g.kinds.filter((k) => (k.metaphorBasis ? k.metaphorBasis === 'generic' : /^(건물|주민)(\(|$)/.test(k.title))).map((k) => k.collection);
       r.channels = g.kinds.reduce((a, k) => a + k.channels.length, 0);
       r.affordances = g.affordances.length;
       r.invariants = { confirmed: g.invariants.filter((i) => i.status === 'confirmed').length, proposed: g.invariants.filter((i) => i.status === 'proposed').length };

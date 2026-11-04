@@ -55,6 +55,16 @@ export function buildLegend(g: WorldGrammar, schema: SystemSchema): LegendEntry[
       lines.push(`이동 경로: ${k.route.from ?? '?'} 건물 → ${k.route.to ?? '?'} 건물`);
     }
     if (k.recency) lines.push(`최근 ${k.recency.seconds}초 안에 생긴 행만 등장 (${k.recency.field} 기준)`);
+    // 왜 이 모습인가(정직성): 은유를 고른 근거
+    const basis = {
+      name: `'${k.collection}' 라는 이름을 보고 고른 모습`,
+      structure: '이름이 아니라 구조(다른 표와의 연결 방식)를 보고 고른 모습',
+      fields: '이름이 아니라 담고 있는 필드(돈·글·위치·파일·작업·사람 정보)를 보고 고른 모습',
+      generic: '알맞은 은유를 찾지 못해 쓴 일반적인 모습(이 모습 자체에는 뜻이 없음)',
+      llm: '언어 모델이 고르고 검증기가 통과시킨 모습',
+      manual: '사람이 정한 모습',
+    }[k.metaphorBasis ?? 'manual'];
+    if (k.metaphorBasis) lines.push(`모습의 근거: ${basis}`);
     const col = findCollection(schema, k.collection);
     return {
       kind: k.id,
