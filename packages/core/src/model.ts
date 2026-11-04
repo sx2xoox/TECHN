@@ -215,8 +215,14 @@ export function learnModel(initial: Snapshot, events: ChangeEvent[], schema: Sys
   }
 
   // 2) 관문: 삽입 순간 대상 상태에 따라 최종 결과가 갈리는가
+  //    여러 관문이 겹치면(예: 판매 중지된 '재고 0' 상품) 다른 관문이 이미 설명하는 행은 근거에서 뺀다(explain-away).
   const finalOf = (r: InsertRec, field: string) => [...r.statusPath].reverse().find((p) => p.field === field)?.value;
-  const gates: LearnedGate[] = [];
+  interface GateCand {
+    gate: LearnedGate;
+    recs: InsertRec[];
+    cond: (r: InsertRec) => boolean | undefined;
+  }
+  const cands: GateCand[] = [];
   for (const c of schema.collections) {
     const recs = all.filter((r) => r.collection === c.name);
     if (recs.length < 5) continue;
@@ -236,20 +242,44 @@ export function learnModel(initial: Snapshot, events: ChangeEvent[], schema: Sys
             return typeof v === 'boolean' ? v === false : undefined;
           };
           const yes = recs.filter((r) => cond(r) === true);
-          const no = recs.filter((r) => cond(r) === false);
-          if (yes.length < 2 || no.length < 3) continue;
           const outcomes = new Set(yes.map((r) => finalOf(r, ef.name)).filter((x): x is string => !!x));
-          for (const s of outcomes) {
-            const pYes = yes.filter((r) => finalOf(r, ef.name) === s).length / yes.length;
-            const pNo = no.filter((r) => finalOf(r, ef.name) === s).length / no.length;
-            if (pYes >= 0.7 && pNo <= 0.3) {
-              gates.push({ source: c.name, refField: f.name, target: target.name, field: tf.name, when: isNum ? { op: '<=', value: 0 } : { op: '==', value: false }, outcome: { field: ef.name, value: s }, prob: pYes, samples: yes.length });
-              rules.push(`${target.name}.${tf.name} ${isNum ? '≤ 0' : '= false'} 일 때 생긴 ${c.name} 는 ${ef.name}=${s} (관측 ${yes.length}건 중 ${pct(pYes)}, 아닐 때는 ${pct(pNo)})`);
-            }
+          for (const value of outcomes) {
+            const gate: LearnedGate = { source: c.name, refField: f.name, target: target.name, field: tf.name, when: isNum ? { op: '<=', value: 0 } : { op: '==', value: false }, outcome: { field: ef.name, value }, prob: 0, samples: 0 };
+            cands.push({ gate, recs, cond });
           }
         }
       }
     }
+  }
+  const sameCond = (a: LearnedGate, b: LearnedGate) => a.source === b.source && a.refField === b.refField && a.target === b.target && a.field === b.field;
+  /** 다른(결과가 다른) 관문이 이 행의 결과를 이미 설명하는가 */
+  const explainedBy = (r: InsertRec, me: GateCand, others: GateCand[]) =>
+    others.some((o) => o !== me && !sameCond(o.gate, me.gate) && o.gate.outcome.value !== me.gate.outcome.value && o.gate.source === r.collection && o.cond(r) === true && finalOf(r, o.gate.outcome.field) === o.gate.outcome.value);
+  const stats = (cand: GateCand, others: GateCand[]) => {
+    const kept = cand.recs.filter((r) => !explainedBy(r, cand, others));
+    const yes = kept.filter((r) => cand.cond(r) === true);
+    const no = kept.filter((r) => cand.cond(r) === false);
+    const hit = (r: InsertRec) => finalOf(r, cand.gate.outcome.field) === cand.gate.outcome.value;
+    return { yes: yes.length, no: no.length, pYes: yes.length ? yes.filter(hit).length / yes.length : 0, pNo: no.length ? no.filter(hit).length / no.length : 1, excluded: cand.recs.length - kept.length };
+  };
+  const strong = (st: ReturnType<typeof stats>) => st.yes >= 2 && st.no >= 3 && st.pYes >= 0.7 && st.pNo <= 0.3;
+  const accepted: GateCand[] = [];
+  for (let round = 0; round < 4; round++) {
+    const fresh = cands.filter((cd) => !accepted.includes(cd) && strong(stats(cd, accepted)));
+    if (!fresh.length) break;
+    accepted.push(...fresh);
+  }
+  // 겹치는 행에서 실제로 이긴 관문을 앞에 둔다(시뮬레이터는 앞의 관문부터 적용)
+  const wins = (a: GateCand, b: GateCand) =>
+    a.recs.filter((r) => r.collection === b.gate.source && a.cond(r) === true && b.cond(r) === true && finalOf(r, a.gate.outcome.field) === a.gate.outcome.value).length;
+  accepted.sort((a, b) => (a.gate.source === b.gate.source ? wins(b, a) - wins(a, b) : 0));
+  const gates: LearnedGate[] = [];
+  for (const cd of accepted) {
+    const st = stats(cd, accepted);
+    if (!strong(st)) continue;
+    const g = { ...cd.gate, prob: st.pYes, samples: st.yes };
+    gates.push(g);
+    rules.push(`${g.target}.${g.field} ${g.when.op === '<=' ? '≤ 0' : '= false'} 일 때 생긴 ${g.source} 는 ${g.outcome.field}=${g.outcome.value} (관측 ${st.yes}건 중 ${pct(st.pYes)}, 아닐 때는 ${pct(st.pNo)}${st.excluded ? ` · 다른 규칙으로 설명되는 ${st.excluded}건 제외` : ''})`);
   }
   const gatedOut = (r: InsertRec) =>
     gates.some((g) => {

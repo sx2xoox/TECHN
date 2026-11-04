@@ -17,8 +17,17 @@ beforeAll(async () => {
   shop = await startShop({ httpPort: 0, pgPort: 59200 + Math.floor(Math.random() * 300), traffic: { orderEveryMs, firstFlashSaleMs: 2500, flashSaleEveryMs: 6000 } });
   rt = new IsomorphRuntime({ adapter: new PostgresAdapter({ connectionString: shop.pgUrl, system: 'demo-shop', changeFeed: 'log', feedMs: 50 }), pollMs: 1000, numRuns: 30, compile: { mode: 'heuristic' } });
   expect(await rt.start()).toBe('running');
-  setTimeout(() => void shop.db.query('update products set active = false where id = 5'), 5000);
+  const gap = () => new Promise((r) => setTimeout(r, 200));
+  // 드문 상황의 근거를 우연에 맡기지 않는다: 판매 중지·재고 0 상황에서 진짜 쇼핑몰 코드로 주문을 몇 건 넣는다
+  setTimeout(async () => {
+    await shop.db.query('update products set active = false where id = 5');
+    for (let i = 0; i < 3; i++) await gap().then(() => shop.shop.placeOrder(1, 5));
+  }, 5000);
   setTimeout(() => void shop.db.query('update products set active = true where id = 5'), 14000);
+  setTimeout(async () => {
+    await shop.db.query('update products set stock = 0 where id = 6');
+    for (let i = 0; i < 3; i++) await gap().then(() => shop.shop.placeOrder(2, 6));
+  }, 9000);
   await new Promise((r) => setTimeout(r, 20_000));
   shop.traffic.stop();
   await new Promise((r) => setTimeout(r, 1500));

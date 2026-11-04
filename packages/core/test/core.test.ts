@@ -20,6 +20,7 @@ import {
   verifyGrammar,
   simulate,
   suggestHypotheses,
+  learnModel,
   type ChangeEvent,
   type Hypothesis,
   type SystemModel,
@@ -250,6 +251,35 @@ describe('cause analysis anchoring', () => {
     const causes = findCauses(v, events, shopSchema, 20_000, undefined, inv);
     expect(causes.map((c) => c.summary)).not.toContain('active: true → false');
     expect(diagnose(v, inv, causes).pattern).toBe('race');
+  });
+});
+
+describe('rule learning', () => {
+  it('explains away rows already explained by another rule and learns which rule wins', () => {
+    // 재고 0 인 상품 1: 판매 중일 때 주문은 failed, 판매 중지 뒤의 주문은 rejected(실제 코드처럼 '판매 중지' 확인이 먼저)
+    const base = shopSnapshot({ stock: 0 });
+    base.collections.orders = [];
+    const iso = (x: number) => new Date(x).toISOString();
+    const events: ChangeEvent[] = [];
+    let t = NOW + 1000;
+    let id = 100;
+    const order = (productId: number, status: string) => {
+      const row = { id: ++id, customer_id: 1, product_id: productId, quantity: 1, status, created_at: iso(t), updated_at: iso(t) };
+      events.push({ ts: t, collection: 'orders', pk: row.id, kind: 'insert', before: null, after: row });
+      if (status === 'pending') events.push({ ts: t + 150, collection: 'orders', pk: row.id, kind: 'update', before: row, after: { ...row, status: 'paid' } });
+      t += 300;
+    };
+    for (let i = 0; i < 4; i++) order(1, 'failed');
+    for (let i = 0; i < 6; i++) order(2, 'pending');
+    events.push({ ts: t, collection: 'products', pk: 1, kind: 'update', before: { id: 1, name: '사과', price: 1200, stock: 0, active: true }, after: { id: 1, name: '사과', price: 1200, stock: 0, active: false } });
+    t += 300;
+    for (let i = 0; i < 3; i++) order(1, 'rejected');
+    const model = learnModel(base, events, shopSchema);
+    // 단순 집계라면 재고 ≤ 0 → failed 는 4/7 = 57% 라 규칙이 되지 못한다
+    const stock = model.gates.find((g) => g.field === 'stock')!;
+    expect(stock).toMatchObject({ outcome: { value: 'failed' }, prob: 1, samples: 4 });
+    expect(model.gates.map((g) => g.field)).toEqual(['active', 'stock']);
+    expect(model.rules.find((r) => r.startsWith('products.stock'))).toContain('다른 규칙으로 설명되는 3건 제외');
   });
 });
 
