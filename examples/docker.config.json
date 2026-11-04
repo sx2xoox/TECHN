@@ -1,0 +1,8 @@
+{
+  "adapter": { "type": "docker", "socketPath": "/var/run/docker.sock", "system": "my-docker-host" },
+  "compile": { "mode": "auto" },
+  "writeMode": "read-only",
+  "pollMs": 2000,
+  "port": 4002,
+  "storePath": "../.data/events-docker.sqlite"
+}

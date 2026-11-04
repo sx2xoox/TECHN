@@ -42,7 +42,7 @@ export class Town {
   constructor(private cb: TownCallbacks) {}
 
   async init(el: HTMLElement) {
-    await this.app.init({ resizeTo: el, background: '#7fb069', antialias: false, autoDensity: true, resolution: Math.min(2, window.devicePixelRatio || 1), roundPixels: true });
+    await this.app.init({ resizeTo: el, background: '#7fb069', antialias: false, autoDensity: true, resolution: Math.min(2, window.devicePixelRatio || 1), roundPixels: true, preserveDrawingBuffer: true });
     el.appendChild(this.app.canvas);
     this.buildings.sortableChildren = true;
     this.npcs.sortableChildren = true;

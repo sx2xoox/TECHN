@@ -1,0 +1,19 @@
+{
+  "adapter": {
+    "type": "http",
+    "system": "demo-shop-http",
+    "baseUrl": "http://127.0.0.1:4100",
+    "collections": [
+      { "name": "customers", "path": "/api/customers" },
+      { "name": "products", "path": "/api/products", "update": { "method": "PATCH", "path": "/api/products/:id" } },
+      { "name": "orders", "path": "/api/orders", "update": { "method": "PATCH", "path": "/api/orders/:id" } },
+      { "name": "shop_stats", "path": "/api/shop_stats" }
+    ]
+  },
+  "compile": { "mode": "auto" },
+  "writeMode": "medium",
+  "pollMs": 700,
+  "port": 4001,
+  "storePath": "../.data/events-http.sqlite",
+  "numRuns": 150
+}

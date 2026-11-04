@@ -1,0 +1,15 @@
+{
+  "adapter": {
+    "type": "postgres",
+    "connectionString": "postgres://USER:PASSWORD@HOST:5432/DBNAME",
+    "schema": "public",
+    "rowLimit": 500,
+    "system": "my-service"
+  },
+  "compile": { "mode": "auto" },
+  "writeMode": "read-only",
+  "pollMs": 1000,
+  "port": 4000,
+  "storePath": "../.data/events.sqlite",
+  "numRuns": 200
+}

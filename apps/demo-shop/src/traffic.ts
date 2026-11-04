@@ -72,10 +72,9 @@ export class Traffic {
     };
     this.timers.push(setInterval(() => void restock(), this.opts.restockEveryMs ?? 7000));
     this.timers.push(setInterval(() => void this.shop.writeStats(), 1000));
-    if ((this.opts.flashSaleEveryMs ?? 45_000) > 0) {
-      this.timers.push(setTimeout(() => void this.flashSale(), this.opts.firstFlashSaleMs ?? 15_000));
-      this.timers.push(setInterval(() => void this.flashSale(), this.opts.flashSaleEveryMs ?? 45_000));
-    }
+    // 첫 반짝 세일(음수면 없음)과 반복 주기(0 이면 반복 없음)는 따로 설정한다
+    if ((this.opts.firstFlashSaleMs ?? 15_000) >= 0) this.timers.push(setTimeout(() => void this.flashSale(), this.opts.firstFlashSaleMs ?? 15_000));
+    if ((this.opts.flashSaleEveryMs ?? 45_000) > 0) this.timers.push(setInterval(() => void this.flashSale(), this.opts.flashSaleEveryMs ?? 45_000));
   }
 
   stop() {
