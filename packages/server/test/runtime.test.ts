@@ -130,6 +130,66 @@ describe('push observation', () => {
   });
 });
 
+describe('access control', () => {
+  it('requires a token, sets a cookie from the link, and keeps viewers read-only', async () => {
+    const srv = await serve(rt, { port: 0, token: 'op-secret', viewerToken: 'view-secret' });
+    const base = `http://127.0.0.1:${srv.port}`;
+    expect((await fetch(`${base}/api/hello`)).status).toBe(401);
+    expect((await fetch(`${base}/api/hello`, { headers: { authorization: 'Bearer wrong' } })).status).toBe(401);
+    const ok = await fetch(`${base}/api/hello`, { headers: { authorization: 'Bearer op-secret' } });
+    expect(ok.status).toBe(200);
+    expect((await ok.json()).role).toBe('operator');
+    const link = await fetch(`${base}/?token=view-secret`, { redirect: 'manual' });
+    expect(link.status).toBe(302);
+    expect(link.headers.get('set-cookie')).toContain('isomorph_token=view-secret');
+    expect(link.headers.get('location')).toBe('/');
+
+    // 토큰 없는 WebSocket 은 거절
+    const denied = await new Promise<number>((resolve) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${srv.port}/ws`);
+      ws.on('unexpected-response', (_req, res) => resolve(res.statusCode ?? 0));
+      ws.on('open', () => resolve(101));
+    });
+    expect(denied).toBe(401);
+    // 다른 출처(Origin)에서 쿠키로 여는 것도 거절
+    const cross = await new Promise<number>((resolve) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${srv.port}/ws`, { headers: { cookie: 'isomorph_token=op-secret', origin: 'https://evil.example' } });
+      ws.on('unexpected-response', (_req, res) => resolve(res.statusCode ?? 0));
+      ws.on('open', () => resolve(101));
+    });
+    expect(cross).toBe(403);
+
+    // 관람자: 보고 살펴볼 수 있지만 행동은 막힘
+    const ws = new WebSocket(`ws://127.0.0.1:${srv.port}/ws`, { headers: { cookie: 'isomorph_token=view-secret' } });
+    const got: ServerMessage[] = [];
+    await new Promise<void>((resolve, reject) => {
+      ws.on('message', (d) => {
+        const m = JSON.parse(String(d)) as ServerMessage;
+        got.push(m);
+        if (m.type === 'world') {
+          ws.send(JSON.stringify({ type: 'inspect', entityId: 'products:1' }));
+          ws.send(JSON.stringify({ type: 'dryrun', entityId: 'products:1', affordanceId: 'products_off' }));
+        }
+        if (got.some((x) => x.type === 'inspect') && got.some((x) => x.type === 'toast')) resolve();
+      });
+      ws.on('error', reject);
+    });
+    const hello = got.find((m) => m.type === 'hello');
+    expect(hello && hello.type === 'hello' && hello.role).toBe('viewer');
+    const ins = got.find((m) => m.type === 'inspect');
+    expect(ins && ins.type === 'inspect' && ins.affordances.every((a) => !a.allowed)).toBe(true);
+    const toast = got.find((m) => m.type === 'toast');
+    expect(toast && toast.type === 'toast' && toast.message).toContain('보기 전용');
+    expect(got.some((m) => m.type === 'dryrun')).toBe(false);
+    ws.close();
+    await srv.close();
+  });
+
+  it('refuses to bind to a non-loopback address without a token', async () => {
+    await expect(serve(rt, { port: 0, host: '0.0.0.0' })).rejects.toThrow('토큰');
+  });
+});
+
 describe('safety rails', () => {
   it('refuses to open a world whose lens is unlawful', async () => {
     const grammar = JSON.parse(JSON.stringify(rt.grammar)) as WorldGrammar;

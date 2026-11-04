@@ -48,12 +48,16 @@ export class Topbar {
     clear(this.verify);
     this.verify.className = `chip verify ${v.ok ? 'ok' : 'bad'}`;
     this.verify.append(v.ok ? '렌즈 검증 ✓' : '렌즈 검증 ✕', h('small', null, ` 충실도 ${v.fidelity.score} · 법칙 ${v.checks.length}종 ${v.totalRuns.toLocaleString('ko-KR')}회`));
-    this.write.textContent = m.writeMode === 'read-only' ? '읽기 전용' : `쓰기 허용: ${riskKo(m.writeMode)}까지`;
-    this.write.className = `chip write ${m.writeMode === 'read-only' ? '' : 'on'}`;
+    const viewer = m.role === 'viewer';
+    this.write.textContent = viewer ? '보기 전용 접속' : m.writeMode === 'read-only' ? '읽기 전용' : `쓰기 허용: ${riskKo(m.writeMode)}까지`;
+    this.write.className = `chip write ${viewer || m.writeMode === 'read-only' ? '' : 'on'}`;
+    this.push = !!m.push;
   }
 
+  private push = false;
+
   setConnection(s: 'connecting' | 'live' | 'history' | 'offline' | 'stress', at?: number) {
-    const text = { connecting: '연결 중…', live: '실시간', history: `과거 ${at ? fmtTime(at) : ''}`, offline: '연결 끊김 — 재연결 중', stress: '부하 시험' }[s];
+    const text = { connecting: '연결 중…', live: this.push ? '실시간 · 즉시 반영' : '실시간', history: `과거 ${at ? fmtTime(at) : ''}`, offline: '연결 끊김 — 재연결 중', stress: '부하 시험' }[s];
     this.conn.className = `conn ${s}`;
     this.conn.textContent = `● ${text}`;
   }

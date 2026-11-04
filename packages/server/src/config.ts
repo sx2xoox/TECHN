@@ -15,6 +15,10 @@ export interface IsomorphConfig {
   storePath?: string;
   numRuns?: number;
   assetsDir?: string;
+  /** 운영자 토큰(없으면 ISOMORPH_TOKEN) */
+  token?: string;
+  /** 관람자 토큰(없으면 ISOMORPH_VIEWER_TOKEN) */
+  viewerToken?: string;
 }
 
 export function loadConfig(file: string): IsomorphConfig {

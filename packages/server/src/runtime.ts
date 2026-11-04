@@ -288,6 +288,7 @@ export class IsomorphRuntime extends EventEmitter {
       writeMode: this.writeMode,
       assets: this.opts.assets ?? null,
       pollMs: this.pollMs,
+      push: this.feedActive,
     };
   }
 

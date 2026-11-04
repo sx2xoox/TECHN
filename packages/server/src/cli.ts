@@ -77,6 +77,8 @@ async function main() {
     host: config.host,
     staticDir: fs.existsSync(staticDir) ? staticDir : undefined,
     assetsDir: config.assetsDir,
+    token: config.token ?? process.env.ISOMORPH_TOKEN,
+    viewerToken: config.viewerToken ?? process.env.ISOMORPH_VIEWER_TOKEN,
     log,
   });
   // 시스템이 아직 안 떴으면 기다렸다가 다시 시도한다

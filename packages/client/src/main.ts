@@ -100,6 +100,7 @@ async function main() {
   function onHello(m: HelloMessage) {
     state.hello = m;
     topbar.setHello(m);
+    if (state.mode === 'live') topbar.setConnection('live');
     legend.render(m);
     town.setGrammar(m.grammar);
     void town.bank.loadGenerated(m.assets);

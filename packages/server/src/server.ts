@@ -4,6 +4,7 @@ import path from 'node:path';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { ClientMessage, ServerMessage, WorldState } from '@isomorph/core';
 import type { IsomorphRuntime } from './runtime.ts';
+import { isLoopback, presentedToken, resolveRole, sameOrigin, sessionCookie, type AuthOptions, type Role } from './auth.ts';
 
 export interface ServeOptions {
   port?: number;
@@ -13,10 +14,15 @@ export interface ServeOptions {
   /** 생성된 픽셀 아트 에셋 경로(/assets/*) */
   assetsDir?: string;
   log?: (msg: string) => void;
+  /** 운영자 토큰(행동 가능) */
+  token?: string;
+  /** 관람자 토큰(보기 전용) */
+  viewerToken?: string;
 }
 
 interface ClientState {
   ws: WebSocket;
+  role: Role;
   /** null 이면 실시간, 숫자면 그 시점을 보고 있음 */
   seekTs: number | null;
 }
@@ -47,12 +53,28 @@ function serveFile(res: http.ServerResponse, root: string, rel: string): boolean
 export async function serve(runtime: IsomorphRuntime, opts: ServeOptions = {}) {
   const log = opts.log ?? (() => {});
   const clients = new Set<ClientState>();
+  const auth: AuthOptions = { token: opts.token, viewerToken: opts.viewerToken };
+  if (!isLoopback(opts.host) && !auth.token) {
+    throw new Error(`외부 주소(${opts.host})로 세계를 열려면 접근 토큰(token)이 필요합니다. ISOMORPH_TOKEN 을 설정하세요.`);
+  }
 
   const server = http.createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
+    const role = resolveRole(req, auth);
+    if (!role) {
+      res.writeHead(401, { 'content-type': 'text/plain; charset=utf-8' });
+      return res.end('ISOMORPH 접근 토큰이 필요합니다. 받은 링크(…/?token=…)로 접속하세요.');
+    }
+    // 링크의 ?token= 은 쿠키로 옮기고 주소창에서 지운다
+    if (url.searchParams.has('token')) {
+      const t = presentedToken(req)!;
+      url.searchParams.delete('token');
+      res.writeHead(302, { 'set-cookie': sessionCookie(t), location: `${url.pathname}${url.search}` });
+      return res.end();
+    }
     if (url.pathname === '/api/hello') {
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
-      return res.end(JSON.stringify({ status: runtime.status, error: runtime.error, compileMode: runtime.compileMode, fallbackReason: runtime.fallbackReason, rounds: runtime.compileRounds, ...(runtime.grammar ? runtime.hello() : {}) }));
+      return res.end(JSON.stringify({ status: runtime.status, error: runtime.error, compileMode: runtime.compileMode, fallbackReason: runtime.fallbackReason, rounds: runtime.compileRounds, ...(runtime.grammar ? runtime.hello() : {}), role }));
     }
     if (url.pathname === '/api/world') {
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
@@ -68,7 +90,14 @@ export async function serve(runtime: IsomorphRuntime, opts: ServeOptions = {}) {
     res.end(opts.staticDir ? 'not found' : '클라이언트가 빌드되지 않았습니다. npm run build 를 실행하세요.');
   });
 
-  const wss = new WebSocketServer({ server, path: '/ws' });
+  const wss = new WebSocketServer({
+    server,
+    path: '/ws',
+    verifyClient: (info, done) => {
+      if (!sameOrigin(info.req)) return done(false, 403, 'origin mismatch');
+      done(resolveRole(info.req, auth) !== null, 401, 'token required');
+    },
+  });
   const send = (c: ClientState, m: ServerMessage) => {
     if (c.ws.readyState === c.ws.OPEN) c.ws.send(JSON.stringify(m));
   };
@@ -81,7 +110,7 @@ export async function serve(runtime: IsomorphRuntime, opts: ServeOptions = {}) {
   const onGrammar = () => runtime.grammar && broadcast({ type: 'grammar', grammar: runtime.grammar, legend: runtime.hello().legend });
   const onStatus = () => {
     if (!runtime.grammar) return;
-    broadcast(runtime.hello());
+    for (const c of clients) send(c, { ...runtime.hello(), role: c.role });
     if (runtime.world) broadcast({ type: 'world', mode: 'live', world: runtime.world }, (c) => c.seekTs === null);
   };
   runtime.on('status', onStatus);
@@ -92,10 +121,10 @@ export async function serve(runtime: IsomorphRuntime, opts: ServeOptions = {}) {
   runtime.on('toast', onToast);
   const timelineTimer = setInterval(() => runtime.status === 'running' && broadcast(runtime.timeline()), 2000);
 
-  wss.on('connection', (ws) => {
-    const c: ClientState = { ws, seekTs: null };
+  wss.on('connection', (ws, req) => {
+    const c: ClientState = { ws, seekTs: null, role: resolveRole(req, auth) ?? 'viewer' };
     clients.add(c);
-    if (runtime.grammar) send(c, runtime.hello());
+    if (runtime.grammar) send(c, { ...runtime.hello(), role: c.role });
     if (runtime.world) send(c, { type: 'world', mode: 'live', world: runtime.world });
     if (runtime.status === 'running') {
       send(c, runtime.timeline());
@@ -109,11 +138,19 @@ export async function serve(runtime: IsomorphRuntime, opts: ServeOptions = {}) {
       } catch {
         return;
       }
+      const writes = ['dryrun', 'approve', 'cancel', 'undo', 'invariant'];
+      if (c.role === 'viewer' && writes.includes(msg.type)) {
+        send(c, { type: 'toast', level: 'warning', message: '보기 전용 접속입니다. 행동은 운영자 토큰으로 접속해야 합니다.' });
+        return;
+      }
       try {
         switch (msg.type) {
-          case 'inspect':
-            send(c, runtime.inspect(msg.entityId, c.seekTs ?? undefined));
+          case 'inspect': {
+            const m = runtime.inspect(msg.entityId, c.seekTs ?? undefined);
+            if (c.role === 'viewer') m.affordances = m.affordances.map((a) => ({ ...a, allowed: false, reason: '보기 전용 접속입니다' }));
+            send(c, m);
             break;
+          }
           case 'dryrun':
             if (c.seekTs !== null) {
               send(c, { type: 'toast', level: 'warning', message: '과거 시점에서는 행동할 수 없습니다. 실시간(LIVE)으로 돌아가세요.' });
@@ -160,7 +197,7 @@ export async function serve(runtime: IsomorphRuntime, opts: ServeOptions = {}) {
   await new Promise<void>((resolve) => server.listen(port, opts.host ?? '127.0.0.1', resolve));
   const addr = server.address();
   const actualPort = typeof addr === 'object' && addr ? addr.port : port;
-  log(`ISOMORPH 세계: http://${opts.host ?? '127.0.0.1'}:${actualPort}`);
+  log(`ISOMORPH 세계: http://${opts.host ?? '127.0.0.1'}:${actualPort}${auth.token ? ' (접근 토큰 필요)' : ''}`);
   return {
     port: actualPort,
     url: `http://${opts.host ?? '127.0.0.1'}:${actualPort}`,

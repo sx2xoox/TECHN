@@ -41,6 +41,10 @@ export interface HelloMessage {
   writeMode: WriteMode;
   assets: AssetManifest | null;
   pollMs: number;
+  /** 이 접속의 권한(보기 전용이면 행동 버튼이 잠긴다) */
+  role?: 'operator' | 'viewer';
+  /** 변경 알림으로 즉시 관측 중인가 */
+  push?: boolean;
 }
 
 export interface WorldMessage {
