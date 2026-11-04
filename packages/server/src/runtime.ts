@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import {
   attachStats,
+  keyOf,
   buildLegend,
   diagnose,
   diffSnapshots,
@@ -145,6 +146,7 @@ export class IsomorphRuntime extends EventEmitter {
         return this.status;
       }
       this.learner = new DynamicInvariantLearner(this.schema);
+      await this.resolveOutside(first);
       this.ingest(first);
       this.status = 'running';
       this.emit('status', this.status);
@@ -217,7 +219,8 @@ export class IsomorphRuntime extends EventEmitter {
       const started = Date.now();
       const part = await this.adapter.snapshot(only);
       // 부분 관측이면 나머지 컬렉션은 직전 상태를 그대로 쓴다
-      const snap = only && this.lastSnapshot ? { ts: part.ts, collections: { ...this.lastSnapshot.collections, ...part.collections } } : part;
+      const snap: Snapshot = only && this.lastSnapshot ? { ts: part.ts, collections: { ...this.lastSnapshot.collections, ...part.collections } } : part;
+      await this.resolveOutside(snap);
       this.ingest(snap, started);
       return this.world;
     } catch (e) {
@@ -225,6 +228,56 @@ export class IsomorphRuntime extends EventEmitter {
       this.emit('toast', { level: 'error', message: `시스템 관측 실패: ${e instanceof Error ? e.message : e}` });
       return this.world;
     }
+  }
+
+  /**
+   * 관측 창(최근 N행) 밖의 행을 가리키는 참조를 '대상 없음' 으로 오판하지 않도록,
+   * 창 안에서 대상이 안 보이는 참조 값만 어댑터에 물어 실제로 있는 것을 snap.outside 에 적는다.
+   * 정말로 없는 대상(진짜 고아 행)은 그대로 법칙 위반으로 남는다.
+   */
+  private outsideCache = new Map<string, { at: number; known: Map<string, unknown> }>();
+  private async resolveOutside(snap: Snapshot) {
+    const lookup = this.adapter.lookup?.bind(this.adapter);
+    delete snap.outside;
+    if (!lookup || !this.grammar) return;
+    const now = Date.now();
+    const outside: Record<string, unknown[]> = {};
+    for (const inv of this.grammar.invariants) {
+      if (inv.status === 'dismissed' || inv.expr.op !== 'refExists') continue;
+      const { collection: target, target: field } = inv.expr;
+      const key = `${target}.${field}`;
+      const inWindow = new Set((snap.collections[target] ?? []).map((r) => keyOf(r[field])));
+      const missing = new Map<string, unknown>();
+      for (const r of snap.collections[inv.collection] ?? []) {
+        const v = r[inv.expr.field];
+        if (v === null || v === undefined) continue;
+        const k = keyOf(v);
+        if (!inWindow.has(k)) missing.set(k, v);
+      }
+      if (!missing.size) continue;
+      let cache = this.outsideCache.get(key);
+      if (!cache || now - cache.at > 30_000) {
+        cache = { at: now, known: new Map() };
+        this.outsideCache.set(key, cache);
+      }
+      const known = cache.known;
+      const ask = [...missing].filter(([k]) => !known.has(k)).slice(0, 5000);
+      if (ask.length) {
+        try {
+          for (const v of await lookup(target, field, ask.map(([, v]) => v))) known.set(keyOf(v), v);
+        } catch (e) {
+          this.log(`참조 확인 실패(${key}): ${e instanceof Error ? e.message : e}`);
+        }
+      }
+      const found = [...missing].filter(([k]) => known.has(k)).map(([, v]) => v);
+      if (found.length) outside[key] = [...(outside[key] ?? []), ...found];
+    }
+    if (Object.keys(outside).length) snap.outside = outside;
+  }
+
+  /** 과거 시점 스냅샷에도 지금 알고 있는 '창 밖 참조' 를 붙인다(시간 여행에서 유령 오판 방지) */
+  private withOutside(snap: Snapshot): Snapshot {
+    return snap.outside || !this.lastSnapshot?.outside ? snap : { ...snap, outside: this.lastSnapshot.outside };
   }
 
   private ingest(snap: Snapshot, startedAt = 0) {
@@ -311,7 +364,7 @@ export class IsomorphRuntime extends EventEmitter {
   /** 과거 시점의 세계 */
   seek(ts: number): WorldState | null {
     const snap = this.store.snapshotAt(ts, this.schema);
-    return snap ? observe(snap, this.grammar, this.schema) : null;
+    return snap ? observe(this.withOutside(snap), this.grammar, this.schema) : null;
   }
 
   private snapshotFor(ts?: number): Snapshot | null {
@@ -326,7 +379,7 @@ export class IsomorphRuntime extends EventEmitter {
     const empty: InspectMessage = { type: 'inspect', entityId: entityIdValue, entity: null, collection: kind?.collection ?? '', pk: parsed?.pk ?? '', row: null, fields: [], violations: [], causes: [], diagnosis: null, affordances: [] };
     if (!snap || !kind || !parsed) return empty;
     const col = findCollection(this.schema, kind.collection)!;
-    const world = observe(snap, this.grammar, this.schema);
+    const world = observe(this.withOutside(snap), this.grammar, this.schema);
     const entity = world.entities.find((e) => e.id === entityIdValue) ?? null;
     const row = (snap.collections[kind.collection] ?? []).find((r) => String(pkOf(r, col)) === parsed.pk) ?? null;
     const masked = row ? maskRow(row, col) : null;

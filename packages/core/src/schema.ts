@@ -61,6 +61,11 @@ export type Row = Record<string, unknown>;
 export interface Snapshot {
   ts: number;
   collections: Record<string, Row[]>;
+  /**
+   * 관측 창(최근 N행) 밖에 실제로 존재함이 확인된 참조 값. 키는 `${collection}.${field}`.
+   * 창 밖에 있을 뿐인 행을 '가리키는 대상이 없는 행'(유령)으로 잘못 그리지 않기 위해 쓴다.
+   */
+  outside?: Record<string, unknown[]>;
 }
 
 export function findCollection(schema: SystemSchema, name: string): CollectionSchema | undefined {

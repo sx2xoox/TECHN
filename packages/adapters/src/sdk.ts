@@ -25,6 +25,8 @@ export interface AdapterSpec {
   write?(cmd: UpdateCommand): Promise<void>;
   describe?(cmd: UpdateCommand): string;
   watch?(onChange: (collections: string[]) => void): Promise<(() => Promise<void>) | null>;
+  /** 일부만 읽는 시스템이라면: values 중 실제로 존재하는 값만 돌려준다(창 밖 참조를 유령으로 오판하지 않게) */
+  lookup?(collection: string, field: string, values: unknown[]): Promise<unknown[]>;
   close?(): Promise<void>;
 }
 
@@ -67,6 +69,7 @@ export function defineAdapter(spec: AdapterSpec): Adapter {
       return spec.describe ? spec.describe(cmd) : `${cmd.collection}#${cmd.pk} ← ${JSON.stringify(cmd.patch)}`;
     },
     ...(spec.watch ? { watch: spec.watch.bind(spec) } : {}),
+    ...(spec.lookup ? { lookup: spec.lookup.bind(spec) } : {}),
     async close() {
       await spec.close?.();
     },

@@ -13,6 +13,11 @@ export interface Adapter {
    * onChange 는 바뀐 컬렉션 이름들을 받는다. 반환값은 구독 해제 함수.
    */
   watch?(onChange: (collections: string[]) => void): Promise<(() => Promise<void>) | null>;
+  /**
+   * 선택: values 중 collection.field 에 실제로 존재하는 값만 돌려준다.
+   * 관측 창(최근 N행) 밖의 행을 가리키는 참조를 '대상 없음' 으로 오판하지 않게 런타임이 쓴다.
+   */
+  lookup?(collection: string, field: string, values: unknown[]): Promise<unknown[]>;
   /** 명령 실행. 변경 전 값(before)이 현재와 다르면 ConflictError (낙관적 동시성) */
   execute(cmd: UpdateCommand): Promise<void>;
   /** 드라이런 화면에 보여줄 사람이 읽을 수 있는 명령 (SQL·HTTP) */

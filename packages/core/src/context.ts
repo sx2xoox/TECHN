@@ -10,6 +10,7 @@ export function buildContextFactory(snapshot: Snapshot, _schema: SystemSchema): 
     let s = valueSets.get(key);
     if (!s) {
       s = new Set((snapshot.collections[collection] ?? []).map((r) => keyOf(r[field])));
+      for (const v of snapshot.outside?.[key] ?? []) s.add(keyOf(v));
       valueSets.set(key, s);
     }
     return s;

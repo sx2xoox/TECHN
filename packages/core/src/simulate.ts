@@ -225,7 +225,7 @@ function runOnce(base: Snapshot, model: SystemModel, h: Hypothesis, grammar: Wor
   const initialKeys = new Set<string>();
   let totalViolations = 0;
   const sample = (t: number) => {
-    const snap: Snapshot = { ts: t0 + t, collections: Object.fromEntries([...tables].map(([k, m]) => [k, [...m.values()].map((r) => ({ ...r }))])) };
+    const snap: Snapshot = { ts: t0 + t, collections: Object.fromEntries([...tables].map(([k, m]) => [k, [...m.values()].map((r) => ({ ...r }))])), ...(base.outside ? { outside: base.outside } : {}) };
     const vs = evaluateInvariants(snap, grammar, schema);
     if (t === 0) {
       // 시작 시점에 이미 깨져 있던 것은 이 가설의 결과가 아니다

@@ -72,6 +72,8 @@ export class PostgresAdapter implements Adapter {
   private client: pg.Client | null = null;
   private schemaName: string;
   private cached: SystemSchema | null = null;
+  /** `${table}.${column}` → 비교에 쓸 컬럼 타입(스키마로 한정한 이름) */
+  private columnTypes = new Map<string, string>();
 
   constructor(private opts: PostgresAdapterOptions) {
     this.db = opts.queryable ?? null;
@@ -102,13 +104,32 @@ export class PostgresAdapter implements Adapter {
     for (const r of enumRows) enums.set(String(r.typname), [...(enums.get(String(r.typname)) ?? []), String(r.enumlabel)]);
 
     const cols = (await db.query(
-      `select c.table_name, c.column_name, c.data_type, c.udt_name, c.is_nullable
+      `select c.table_name, c.column_name, c.data_type, c.udt_schema, c.udt_name, c.is_nullable
          from information_schema.columns c
          join information_schema.tables t on t.table_schema = c.table_schema and t.table_name = c.table_name
         where c.table_schema = $1 and t.table_type = 'BASE TABLE'
         order by c.table_name, c.ordinal_position`,
       [s],
     )).rows;
+    // 파티션(예: payment_p2022_01)은 부모 테이블과 같은 행을 또 담으므로 따로 그리지 않는다
+    const partitions = new Set((await db.query(
+      `select c.relname from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = $1 and c.relispartition`,
+      [s],
+    )).rows.map((r) => String(r.relname)));
+    // 파티션에만 걸린 외래 키는 부모 테이블의 참조로 본다
+    const partitionKeys = (await db.query(
+      `select parent.relname as table_name, a.attname as column_name, ref.relname as ref_table, ra.attname as ref_column
+         from pg_constraint con
+         join pg_class child on child.oid = con.conrelid
+         join pg_namespace n on n.oid = child.relnamespace
+         join pg_inherits i on i.inhrelid = child.oid
+         join pg_class parent on parent.oid = i.inhparent
+         join pg_class ref on ref.oid = con.confrelid
+         join pg_attribute a on a.attrelid = child.oid and a.attnum = con.conkey[1]
+         join pg_attribute ra on ra.attrelid = con.confrelid and ra.attnum = con.confkey[1]
+        where n.nspname = $1 and con.contype = 'f' and child.relispartition and array_length(con.conkey, 1) = 1`,
+      [s],
+    )).rows.map((r): Record<string, unknown> => ({ ...r, constraint_type: 'FOREIGN KEY' }));
     const keys = (await db.query(
       `select tc.table_name, tc.constraint_type, kcu.column_name, ccu.table_name as ref_table, ccu.column_name as ref_column
          from information_schema.table_constraints tc
@@ -128,16 +149,19 @@ export class PostgresAdapter implements Adapter {
     )).rows;
 
     const tables = new Map<string, CollectionSchema>();
+    this.columnTypes.clear();
     for (const r of cols) {
       const table = String(r.table_name);
       if (this.opts.tables && !this.opts.tables.includes(table)) continue;
       if (table.startsWith('isomorph_')) continue; // ISOMORPH 자신의 보조 테이블은 세계에 그리지 않는다
+      if (partitions.has(table)) continue;
+      this.columnTypes.set(`${table}.${r.column_name}`, `${quoteIdent(String(r.udt_schema))}.${quoteIdent(String(r.udt_name))}`);
       const c = tables.get(table) ?? { name: table, primaryKey: '', fields: [] };
       const { type, enumValues } = mapType(String(r.data_type), String(r.udt_name), enums);
       c.fields.push({ name: String(r.column_name), type, nullable: r.is_nullable === 'YES', ...(enumValues ? { enumValues } : {}) });
       tables.set(table, c);
     }
-    for (const k of keys) {
+    for (const k of [...keys, ...partitionKeys]) {
       const c = tables.get(String(k.table_name));
       if (!c) continue;
       const f = c.fields.find((x) => x.name === k.column_name);
@@ -178,6 +202,19 @@ export class PostgresAdapter implements Adapter {
       collections[c.name] = res.rows.reverse().map((r) => normalizeRow(r, schema, c.name));
     }
     return { ts: Date.now(), collections };
+  }
+
+  /** values 중 table.field 에 실제로 있는 값만(색인을 쓰도록 컬럼 타입으로 바꿔 비교) */
+  async lookup(collection: string, field: string, values: unknown[]): Promise<unknown[]> {
+    const type = this.columnTypes.get(`${collection}.${field}`);
+    if (!type || values.length === 0) return [];
+    const texts = values.map((v) => (v !== null && typeof v === 'object' ? JSON.stringify(v) : String(v)));
+    const res = await this.q().query(
+      `select distinct ${quoteIdent(field)}::text as v from ${quoteIdent(this.schemaName)}.${quoteIdent(collection)} where ${quoteIdent(field)} = any($1::text[]::${type}[])`,
+      [texts],
+    );
+    const found = new Set(res.rows.map((r) => String(r.v)));
+    return values.filter((_, i) => found.has(texts[i]));
   }
 
   private validate(cmd: UpdateCommand) {
