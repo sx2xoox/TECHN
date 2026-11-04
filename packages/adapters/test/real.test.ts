@@ -103,7 +103,7 @@ describe.skipIf(!PG_URL)('PostgresAdapter on a real PostgreSQL server', () => {
 
 describe.skipIf(!DOCKER)('DockerAdapter on a real Docker daemon', () => {
   it('observes real containers and stops/starts one through the lens', async () => {
-    const a = new DockerAdapter({});
+    const a = new DockerAdapter({ stopTimeoutSec: 2 });
     await a.connect();
     const snap = await a.snapshot();
     const web = snap.collections.containers.find((c) => c.name === 'iso-web');

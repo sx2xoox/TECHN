@@ -151,6 +151,7 @@ describe('DockerAdapter (mock Engine API over a unix socket)', () => {
   let server: http.Server;
   let socketPath: string;
   const calls: string[] = [];
+  const mockState = new Map<string, string>();
   const containers = [
     { Id: 'aaaaaaaaaaaa1111', Names: ['/web'], Image: 'nginx:1.27', State: 'running', Status: 'Up 3 minutes', Created: 1_700_000_000 },
     { Id: 'bbbbbbbbbbbb2222', Names: ['/worker'], Image: 'app:2', State: 'exited', Status: 'Exited (1)', Created: 1_700_000_100 },
@@ -162,12 +163,13 @@ describe('DockerAdapter (mock Engine API over a unix socket)', () => {
       res.setHeader('content-type', 'application/json');
       if (req.url === '/_ping') return res.end('OK');
       if (req.url === '/containers/json?all=1') return res.end(JSON.stringify(containers));
-      const m = /^\/containers\/(\w+)\/(json|stats\?stream=false|start|stop|pause|unpause)$/.exec(req.url ?? '');
-      if (m && m[2] === 'json') return res.end(JSON.stringify({ RestartCount: m[1].startsWith('b') ? 4 : 0 }));
+      const m = /^\/containers\/(\w+)\/(json|stats\?stream=false|start|stop|pause|unpause)(?:\?t=\d+)?$/.exec(req.url ?? '');
+      if (m && m[2] === 'json') return res.end(JSON.stringify({ RestartCount: m[1].startsWith('b') ? 4 : 0, State: { Status: mockState.get(m[1]) ?? 'running' } }));
       if (m && m[2].startsWith('stats')) {
         return res.end(JSON.stringify({ cpu_stats: { cpu_usage: { total_usage: 2000 }, system_cpu_usage: 20000, online_cpus: 2 }, precpu_stats: { cpu_usage: { total_usage: 1000 }, system_cpu_usage: 10000 }, memory_stats: { usage: 64 * 1048576 } }));
       }
       if (m) {
+        mockState.set(m[1], { start: 'running', unpause: 'running', stop: 'exited', pause: 'paused' }[m[2]] ?? 'running');
         res.statusCode = 204;
         return res.end();
       }
@@ -190,7 +192,7 @@ describe('DockerAdapter (mock Engine API over a unix socket)', () => {
     expect(a.describe(stop)).toBe('POST /containers/aaaaaaaaaaaa/stop');
     await a.execute(stop);
     await a.execute({ ...stop, patch: { state: 'running' }, before: { state: 'paused' } });
-    expect(calls).toEqual(expect.arrayContaining(['POST /containers/aaaaaaaaaaaa/stop', 'POST /containers/aaaaaaaaaaaa/unpause']));
+    expect(calls).toEqual(expect.arrayContaining(['POST /containers/aaaaaaaaaaaa/stop?t=10', 'POST /containers/aaaaaaaaaaaa/unpause']));
     expect(() => a.describe({ ...stop, patch: { name: 'x' } })).toThrow('state 만');
     const r = await compile(await a.introspect(), { mode: 'heuristic', numRuns: 30 });
     expect(r.report.ok).toBe(true);

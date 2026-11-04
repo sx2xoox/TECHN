@@ -9,6 +9,10 @@ export interface DockerAdapterOptions {
   system?: string;
   /** 실행 중 컨테이너의 CPU/메모리 통계를 읽을 최대 개수 */
   statsLimit?: number;
+  /** stop 시 SIGKILL 전까지 기다릴 초(Docker 기본 10) */
+  stopTimeoutSec?: number;
+  /** 상태 전환을 확인할 최대 시간(ms) */
+  settleMs?: number;
 }
 
 const STATES = ['created', 'running', 'paused', 'restarting', 'removing', 'exited', 'dead'];
@@ -146,10 +150,20 @@ export class DockerAdapter implements Adapter {
 
   async execute(cmd: UpdateCommand): Promise<void> {
     const action = this.action(cmd);
-    const r = await this.request<{ message?: string }>('POST', `/containers/${cmd.pk}/${action}`);
+    const query = action === 'stop' ? `?t=${this.opts.stopTimeoutSec ?? 10}` : '';
+    const r = await this.request<{ message?: string }>('POST', `/containers/${cmd.pk}/${action}${query}`);
     if (r.status === 304) throw new ConflictError('컨테이너가 이미 그 상태입니다');
     if (r.status === 404) throw new ConflictError('컨테이너가 더 이상 존재하지 않습니다');
     if (r.status >= 300) throw new Error(`Docker ${action} 실패 (${r.status}): ${r.body?.message ?? ''}`);
+    // 요청이 받아들여져도 상태 전환은 조금 늦을 수 있다(엔진 버전에 따라 다름) — 실제로 바뀔 때까지 확인한다
+    const want = String(cmd.patch.state);
+    const deadline = Date.now() + (this.opts.settleMs ?? 20_000);
+    for (;;) {
+      const s = await this.request<{ State?: { Status?: string } }>('GET', `/containers/${cmd.pk}/json`);
+      if (s.status === 200 && s.body?.State?.Status === want) return;
+      if (Date.now() > deadline) throw new Error(`Docker ${action} 후 상태가 ${want} 로 바뀌지 않았습니다(현재 ${s.body?.State?.Status ?? '알 수 없음'})`);
+      await new Promise((res) => setTimeout(res, 150));
+    }
   }
 
   async close() {}
