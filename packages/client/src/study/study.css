@@ -36,3 +36,5 @@ table.grid tbody tr:hover { background: #3a3346; }
 table.grid tbody tr.sel { background: #24406b; outline: 2px solid var(--blue); }
 table.grid tbody tr.alert { background: #5a2420; }
 table.grid tbody tr.alert.sel { background: #6b2a5a; }
+.field input[type=text] { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); padding: 6px; font-family: inherit; font-size: 13px; }
+.pilot-tag { position: fixed; right: 10px; bottom: 10px; background: #5a4520; border: 1px solid var(--warn); color: #ffe8a8; padding: 4px 10px; z-index: 50; font-size: 11px; }

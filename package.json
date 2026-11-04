@@ -25,7 +25,8 @@
     "bench:heldout": "tsx scripts/bench-heldout-schemas.ts",
     "study": "tsx scripts/study.ts",
     "study:analyze": "tsx scripts/study-analyze.ts",
-    "study:selftest": "tsx scripts/study-selftest.ts"
+    "study:selftest": "tsx scripts/study-selftest.ts",
+    "study:power": "tsx scripts/study-power.ts"
   },
   "engines": {
     "node": ">=22.13"

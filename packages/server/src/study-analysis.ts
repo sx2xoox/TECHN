@@ -25,7 +25,21 @@ export interface SessionRecord {
   type: 'session';
   participant: number;
   session: string;
-  background?: { developer?: string; dashboards?: number };
+  pilot?: boolean;
+  conditions?: string[];
+  ts?: number;
+  background?: { developer?: string; dashboards?: number; ageBand?: string };
+}
+/** 진행자가 사전 등록한 기준에 따라 뺀 참가자(사유를 남긴다) */
+export interface ExclusionRecord {
+  type: 'exclusion';
+  participant: number;
+  reason: string;
+}
+/** 마지막 설문까지 마친 참가자 */
+export interface CompleteRecord {
+  type: 'complete';
+  participant: number;
 }
 export interface QuestionnaireRecord {
   type: 'questionnaire';
@@ -36,7 +50,27 @@ export interface QuestionnaireRecord {
   final?: boolean;
   preference?: string;
 }
-export type StudyRecord = TrialRecord | SessionRecord | QuestionnaireRecord;
+export type StudyRecord = TrialRecord | SessionRecord | QuestionnaireRecord | ExclusionRecord | CompleteRecord;
+
+export interface StudyFilter {
+  group?: string;
+  /** 예비(파일럿) 참가자를 포함할지(기본: 빼기) */
+  includePilot?: boolean;
+  /** 끝까지 마친 참가자만(기본: 예) */
+  completeOnly?: boolean;
+}
+
+/** 분석에 넣을 참가자: 예비·제외·미완료를 사전에 정한 대로 거른다 */
+export function eligibleParticipants(records: StudyRecord[], f: StudyFilter = {}): Set<number> {
+  const sessions = records.filter((r): r is SessionRecord => r.type === 'session');
+  const excluded = new Set(records.filter((r) => r.type === 'exclusion').map((r) => r.participant));
+  const complete = new Set(records.filter((r) => r.type === 'complete' || (r.type === 'questionnaire' && r.final)).map((r) => r.participant));
+  return new Set(
+    sessions
+      .filter((s) => (f.includePilot || !s.pilot) && !excluded.has(s.participant) && (f.completeOnly === false || complete.has(s.participant)) && (!f.group || (s.background?.developer || '응답 없음') === f.group))
+      .map((s) => s.participant),
+  );
+}
 
 export function readStudyRecords(dir: string): StudyRecord[] {
   if (!fs.existsSync(dir)) return [];
@@ -154,10 +188,11 @@ export interface StudyReport {
   warnings: string[];
 }
 
-export function analyzeStudy(records: StudyRecord[], opts: { group?: string } = {}): StudyReport {
+export function analyzeStudy(records: StudyRecord[], opts: StudyFilter = {}): StudyReport {
   const sessions = records.filter((r): r is SessionRecord => r.type === 'session');
   const groupOf = new Map(sessions.map((s) => [s.participant, s.background?.developer || '응답 없음']));
-  const keep = (p: number) => !opts.group || groupOf.get(p) === opts.group;
+  const eligible = eligibleParticipants(records, opts);
+  const keep = (p: number) => eligible.has(p);
   const trials = records.filter((r): r is TrialRecord => r.type === 'trial' && !r.practice && keep(r.participant));
   const qs = records.filter((r): r is QuestionnaireRecord => r.type === 'questionnaire' && keep(r.participant));
   const participants = [...new Set(trials.map((t) => t.participant))];
@@ -199,6 +234,8 @@ export function analyzeStudy(records: StudyRecord[], opts: { group?: string } = 
   for (const p of participants) byGroup[groupOf.get(p) ?? '응답 없음'] = (byGroup[groupOf.get(p) ?? '응답 없음'] ?? 0) + 1;
 
   const warnings: string[] = [];
+  const dropped = sessions.length - eligible.size;
+  if (dropped > 0 && !opts.group) warnings.push(`세션 ${sessions.length}개 중 ${dropped}개는 분석에서 빠졌습니다(예비·제외·미완료).`);
   if (participants.length < 12) warnings.push(`참가자가 ${participants.length}명뿐이라 결론을 내리기에 부족합니다(사전에 정한 표본 크기까지 모으세요).`);
   for (const c of comparisons) if (c.participants < participants.length) warnings.push(`${c.a} 대 ${c.b}: 한 조건에서 정답이 하나도 없는 참가자 ${participants.length - c.participants}명은 시간 비교에서 빠졌습니다(정확도 표를 함께 보세요).`);
   return { participants: participants.length, byGroup, conditions: summaries, comparisons, preference, warnings };
@@ -225,4 +262,49 @@ export function studyReportMarkdown(r: StudyReport, title = '사용자 실험 �
   }
   if (Object.keys(r.preference).length) lines.push(`선호: ${Object.entries(r.preference).map(([k, v]) => `${KO[k] ?? k} ${v}`).join(', ')}`, '');
   return lines.join('\n');
+}
+
+
+/** 과제 단위 CSV(본 과제만): R·SPSS·엑셀에서 다시 분석할 수 있게 */
+export function studyCsv(records: StudyRecord[], f: StudyFilter = {}): string {
+  const eligible = eligibleParticipants(records, f);
+  const sessions = new Map(records.filter((r): r is SessionRecord => r.type === 'session').map((s) => [s.participant, s]));
+  const cols = ['participant', 'group', 'dashboards', 'pilot', 'order', 'condition', 'anomaly', 'locateCorrect', 'diagnoseCorrect', 'timeMs', 'gaveUp', 'timedOut'];
+  const esc = (v: unknown) => {
+    const s = v === null || v === undefined ? '' : String(v);
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const rows = records
+    .filter((r): r is TrialRecord => r.type === 'trial' && !r.practice && eligible.has(r.participant))
+    .map((t) => {
+      const s = sessions.get(t.participant);
+      return [t.participant, s?.background?.developer ?? '', s?.background?.dashboards ?? '', !!s?.pilot, (s?.conditions ?? []).join('>'), t.condition, t.anomaly, t.locateCorrect, t.diagnoseCorrect, t.timeMs, t.gaveUp, t.timedOut].map(esc).join(',');
+    });
+  return [cols.join(','), ...rows].join('\n') + '\n';
+}
+
+/**
+ * 검정력 모의실험: 참가자 n 명일 때 'KPI 달성(비율 95% 구간 상한 ≤ 0.5)' 과 '윌콕슨 p < 0.05' 가 나올 확률.
+ * 가정: 표 조건 시간은 로그정규(중앙값 tableMs, 로그 표준편차 0.5),
+ *       참가자별 세계/표 비율은 로그정규(중앙값 trueRatio, 로그 표준편차 logSd).
+ */
+export function studyPower(opts: { n: number; trueRatio: number; logSd: number; sims?: number; seed?: number; tableMs?: number }): { kpi: number; wilcoxon: number } {
+  const sims = opts.sims ?? 300;
+  let s = opts.seed ?? 11;
+  const rnd = () => ((s = (s * 1664525 + 1013904223) >>> 0) + 0.5) / 4294967297;
+  const normal = () => Math.sqrt(-2 * Math.log(rnd())) * Math.cos(2 * Math.PI * rnd());
+  let kpi = 0;
+  let sig = 0;
+  for (let k = 0; k < sims; k++) {
+    const table: number[] = [];
+    const ratio: number[] = [];
+    for (let i = 0; i < opts.n; i++) {
+      table.push((opts.tableMs ?? 20_000) * Math.exp(0.5 * normal()));
+      ratio.push(opts.trueRatio * Math.exp(opts.logSd * normal()));
+    }
+    const [, hi] = bootstrapMedianCI(ratio, 800, 1000 + k);
+    if (hi <= 0.5) kpi++;
+    if (wilcoxon(ratio.map((r, i) => table[i] * r - table[i])).p < 0.05) sig++;
+  }
+  return { kpi: kpi / sims, wilcoxon: sig / sims };
 }

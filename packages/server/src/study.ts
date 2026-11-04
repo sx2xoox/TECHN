@@ -1,9 +1,10 @@
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { buildLegend, type WorldGrammar, type SystemSchema } from '@isomorph/core';
 import { serveFile } from './server.ts';
+import { analyzeStudy, readStudyRecords, studyCsv, studyReportMarkdown, type SessionRecord, type StudyRecord } from './study-analysis.ts';
 import { makeTrial, planTrials, STUDY_ANOMALIES, STUDY_CHOICES, STUDY_RULES, studyGrammar, type StudyAnomaly, type StudyTrial } from './study-data.ts';
 
 /**
@@ -31,6 +32,10 @@ export interface StudyOptions {
   timeLimitMs?: number;
   /** 자가 시험용: 과제에 정답을 실어 보낸다(실제 실험에서는 절대 켜지 않는다) */
   exposeAnswers?: boolean;
+  /** 진행자 화면(/study/admin) 토큰. 없으면 시작할 때 무작위로 만든다 */
+  adminToken?: string;
+  /** 참가 코드: 원격 실험에서 아무나 참여하지 못하게(외부 주소로 열 때는 필수) */
+  accessCode?: string;
   log?: (msg: string) => void;
 }
 
@@ -69,10 +74,30 @@ export async function startStudyServer(opts: StudyOptions) {
   const practice = opts.practicePerCondition ?? 1;
   const timeLimitMs = opts.timeLimitMs ?? 120_000;
   fs.mkdirSync(opts.dataDir, { recursive: true });
+  const loopback = ['127.0.0.1', 'localhost', '::1', undefined].includes(opts.host);
+  if (!loopback && !opts.accessCode) throw new Error(`외부 주소(${opts.host})로 실험을 열려면 참가 코드(accessCode / STUDY_ACCESS_CODE)가 필요합니다.`);
+  const adminToken = opts.adminToken ?? randomBytes(12).toString('hex');
   const { schema, grammar } = studyGrammar();
   const sessions = new Map<string, Session>();
 
-  const nextParticipant = () => fs.readdirSync(opts.dataDir).filter((f) => f.endsWith('.jsonl')).length + sessions.size;
+  // 참가 번호는 지운(철회한) 참가자가 있어도 다시 쓰지 않는다(순서 균형과 기록이 섞이지 않게)
+  const counterFile = path.join(opts.dataDir, '.next-participant');
+  const nextParticipant = () => {
+    const fromFiles = fs.readdirSync(opts.dataDir).filter((f) => f.endsWith('.jsonl')).length;
+    const stored = fs.existsSync(counterFile) ? Number(fs.readFileSync(counterFile, 'utf8')) || 0 : 0;
+    const n = Math.max(stored, fromFiles);
+    fs.writeFileSync(counterFile, String(n + 1));
+    return n;
+  };
+  const sameSecret = (a: string, b: string) => a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
+  const isAdmin = (req: http.IncomingMessage, url: URL) => sameSecret(String(req.headers['x-study-admin'] ?? url.searchParams.get('token') ?? ''), adminToken);
+  const filesOf = (participant: number) => fs.readdirSync(opts.dataDir).filter((f) => f.endsWith('.jsonl') && f.includes(`-p${String(participant).padStart(3, '0')}-`));
+  const appendFor = (participant: number, entry: Record<string, unknown>) => {
+    const f = filesOf(participant)[0];
+    if (!f) return false;
+    fs.appendFileSync(path.join(opts.dataDir, f), `${JSON.stringify({ ts: Date.now(), participant, ...entry })}\n`);
+    return true;
+  };
 
   function createSession(): Session {
     const id = randomUUID();
@@ -138,11 +163,20 @@ export async function startStudyServer(opts: StudyOptions) {
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
     try {
+      if (req.method === 'GET' && url.pathname === '/api/study/config') {
+        return json(res, 200, { requiresCode: !!opts.accessCode });
+      }
+      if (url.pathname.startsWith('/api/study/admin/') || url.pathname === '/study/admin') {
+        if (!isAdmin(req, url)) return json(res, 403, { error: '진행자 토큰이 필요합니다' });
+        return await admin(req, res, url);
+      }
       if (req.method === 'POST' && url.pathname === '/api/study/session') {
         const body = await readBody(req);
+        if (opts.accessCode && !sameSecret(String(body.code ?? ''), opts.accessCode)) return json(res, 403, { error: '참가 코드가 맞지 않습니다' });
         const s = createSession();
         record(s, {
           type: 'session',
+          pilot: !!body.pilot,
           conditions: s.trials.filter((t, i, a) => a.findIndex((x) => x.condition === t.condition) === i).map((t) => t.condition),
           perCondition,
           practice,
@@ -221,6 +255,10 @@ export async function startStudyServer(opts: StudyOptions) {
           confidence: clamp(b.confidence),
           ...(b.final ? { final: true, preference: String(b.preference ?? '').slice(0, 20), comment: String(b.comment ?? '').slice(0, 2000) } : {}),
         });
+        if (b.final) {
+          record(s!, { type: 'complete' });
+          log(`참가자 ${s!.participant} 완료`);
+        }
         return json(res, 200, { ok: true });
       }
       if (url.pathname === '/' || url.pathname === '/study') {
@@ -233,12 +271,109 @@ export async function startStudyServer(opts: StudyOptions) {
     }
   });
 
+  /** 진행자 화면과 API: 진행 상황, 제외(사유 기록), 철회(기록 삭제), 보고서, CSV */
+  async function admin(req: http.IncomingMessage, res: http.ServerResponse, url: URL) {
+    const records = readStudyRecords(opts.dataDir) as StudyRecord[];
+    if (req.method === 'GET' && url.pathname === '/api/study/admin/sessions') {
+      const list = records
+        .filter((r): r is SessionRecord => r.type === 'session')
+        .map((s) => {
+          const mine = records.filter((r) => r.participant === s.participant);
+          return {
+            participant: s.participant,
+            started: s.ts ?? null,
+            pilot: !!s.pilot,
+            group: s.background?.developer ?? '',
+            order: s.conditions ?? [],
+            answered: mine.filter((r) => r.type === 'trial').length,
+            complete: mine.some((r) => r.type === 'complete'),
+            excluded: (mine.find((r) => r.type === 'exclusion') as { reason?: string } | undefined)?.reason ?? null,
+          };
+        })
+        .sort((a, b) => a.participant - b.participant);
+      return json(res, 200, { sessions: list, live: [...sessions.values()].filter((s) => !list.find((l) => l.participant === s.participant && l.complete)).map((s) => s.participant) });
+    }
+    if (req.method === 'GET' && url.pathname === '/api/study/admin/report') {
+      const includePilot = url.searchParams.get('pilot') === '1';
+      const md = [studyReportMarkdown(analyzeStudy(records, { includePilot }), '전체'), studyReportMarkdown(analyzeStudy(records, { includePilot, group: 'none' }), '개발자가 아닌 참가자만')].join('\n\n');
+      return json(res, 200, { markdown: md });
+    }
+    if (req.method === 'GET' && url.pathname === '/api/study/admin/export.csv') {
+      res.writeHead(200, { 'content-type': 'text/csv; charset=utf-8', 'content-disposition': 'attachment; filename="isomorph-study.csv"', 'cache-control': 'no-store' });
+      return res.end(`\ufeff${studyCsv(records, { includePilot: url.searchParams.get('pilot') === '1' })}`);
+    }
+    if (req.method === 'POST' && url.pathname === '/api/study/admin/exclude') {
+      const b = await readBody(req);
+      const reason = String(b.reason ?? '').trim().slice(0, 300);
+      if (!reason) return json(res, 400, { error: '제외 사유를 적어 주세요(사전 등록한 기준)' });
+      if (!appendFor(Number(b.participant), { type: 'exclusion', reason })) return json(res, 404, { error: '그 참가자의 기록이 없습니다' });
+      log(`참가자 ${b.participant} 제외: ${reason}`);
+      return json(res, 200, { ok: true });
+    }
+    if (req.method === 'POST' && url.pathname === '/api/study/admin/withdraw') {
+      const b = await readBody(req);
+      const participant = Number(b.participant);
+      const files = filesOf(participant);
+      if (!files.length) return json(res, 404, { error: '그 참가자의 기록이 없습니다' });
+      for (const f of files) fs.rmSync(path.join(opts.dataDir, f));
+      for (const [id, s] of sessions) if (s.participant === participant) sessions.delete(id);
+      // 감사 기록에는 번호와 시각만 남긴다(내용은 남기지 않는다)
+      fs.appendFileSync(path.join(opts.dataDir, 'withdrawals.log'), `${new Date().toISOString()} p${participant} 기록 ${files.length}개 삭제\n`);
+      log(`참가자 ${participant} 철회: 기록 삭제`);
+      return json(res, 200, { ok: true, deleted: files.length });
+    }
+    if (req.method === 'GET' && url.pathname === '/study/admin') {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+      return res.end(ADMIN_HTML);
+    }
+    return json(res, 404, { error: 'not found' });
+  }
+
   await new Promise<void>((resolve) => server.listen(opts.port ?? 4100, opts.host ?? '127.0.0.1', resolve));
   const addr = server.address();
   const port = typeof addr === 'object' && addr ? addr.port : opts.port ?? 4100;
   return {
     port,
     url: `http://${opts.host ?? '127.0.0.1'}:${port}/study`,
+    adminUrl: `http://${opts.host ?? '127.0.0.1'}:${port}/study/admin?token=${adminToken}`,
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
   };
 }
+
+/** 진행자 화면: 외부 스크립트 없이 한 장으로 */
+const ADMIN_HTML = `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ISOMORPH 실험 진행자</title>
+<style>
+body{font-family:system-ui,'Apple SD Gothic Neo','Noto Sans KR',sans-serif;background:#1c1722;color:#f3ede2;margin:0;padding:16px 24px;font-size:14px}
+h1{font-size:18px}h2{font-size:15px;margin-top:24px}table{border-collapse:collapse;width:100%;max-width:1100px}
+th,td{border:1px solid #4a4356;padding:4px 8px;text-align:left}th{background:#342d3e}.muted{color:#a99fb5}.bad{color:#ff6b57}.ok{color:#5bbf4a}
+button,input{font:inherit;background:#342d3e;color:inherit;border:1px solid #4a4356;padding:3px 8px}button{cursor:pointer}pre{white-space:pre-wrap;background:#2b2533;padding:12px;max-width:1100px}
+a{color:#8fb8ff}
+</style></head><body>
+<h1>ISOMORPH 사용자 실험 — 진행자 화면</h1>
+<p class="muted">이 화면의 주소(토큰)는 참가자에게 보이지 않게 하세요. 제외는 사전 등록한 기준에 따라서만, 철회는 참가자가 요청할 때만 쓰세요.</p>
+<p><a id="csv" href="#">CSV 내려받기(본 과제, 예비·제외·미완료 뺌)</a> · <label><input type="checkbox" id="pilot"> 예비 참가자 포함해 보기</label></p>
+<h2>참가자</h2><table id="t"><thead><tr><th>번호</th><th>시작</th><th>개발 경험</th><th>조건 순서</th><th>답한 과제</th><th>상태</th><th></th></tr></thead><tbody></tbody></table>
+<h2>보고서</h2><pre id="r">불러오는 중…</pre>
+<script>
+const token = new URLSearchParams(location.search).get('token');
+const H = { 'x-study-admin': token, 'content-type': 'application/json' };
+const api = (p, o = {}) => fetch(p, { ...o, headers: H }).then(async (r) => { const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.error || r.statusText); return j; });
+function el(tag, attrs, ...kids) { const e = document.createElement(tag); Object.assign(e, attrs || {}); for (const k of kids) e.append(k); return e; }
+async function load() {
+  const pilot = document.getElementById('pilot').checked ? '1' : '0';
+  document.getElementById('csv').href = '/api/study/admin/export.csv?token=' + encodeURIComponent(token) + '&pilot=' + pilot;
+  const { sessions, live } = await api('/api/study/admin/sessions');
+  const tb = document.querySelector('#t tbody'); tb.replaceChildren();
+  for (const s of sessions) {
+    const state = s.excluded ? el('span', { className: 'bad', textContent: '제외: ' + s.excluded }) : s.complete ? el('span', { className: 'ok', textContent: '완료' }) : el('span', { className: 'muted', textContent: live.includes(s.participant) ? '진행 중' : '중단' });
+    const ex = el('button', { textContent: '제외', onclick: async () => { const reason = prompt('제외 사유(사전 등록한 기준)'); if (reason) { await api('/api/study/admin/exclude', { method: 'POST', body: JSON.stringify({ participant: s.participant, reason }) }); load(); } } });
+    const wd = el('button', { textContent: '철회(기록 삭제)', onclick: async () => { if (confirm('참가자 ' + s.participant + '의 기록을 모두 지웁니다. 참가자가 철회를 요청했나요?')) { await api('/api/study/admin/withdraw', { method: 'POST', body: JSON.stringify({ participant: s.participant }) }); load(); } } });
+    tb.append(el('tr', {}, el('td', { textContent: s.participant + (s.pilot ? ' (예비)' : '') }), el('td', { textContent: s.started ? new Date(s.started).toLocaleString('ko-KR') : '' }), el('td', { textContent: s.group }), el('td', { textContent: s.order.join(' → ') }), el('td', { textContent: s.answered }), el('td', {}, state), el('td', {}, ex, ' ', wd)));
+  }
+  const { markdown } = await api('/api/study/admin/report?pilot=' + pilot);
+  document.getElementById('r').textContent = markdown;
+}
+document.getElementById('pilot').onchange = load;
+load().catch((e) => (document.getElementById('r').textContent = '오류: ' + e.message));
+setInterval(() => load().catch(() => {}), 10000);
+</script></body></html>`;

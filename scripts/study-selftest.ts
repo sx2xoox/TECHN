@@ -38,7 +38,7 @@ try {
     page.on('pageerror', (e: Error) => errors.push(e.message));
     const phase = () => page.evaluate('window.__study?.phase') as Promise<string>;
     const waitPhase = async (not: string) => page.waitForFunction(`window.__study && window.__study.phase !== ${JSON.stringify(not)}`, null, { timeout: 20_000 });
-    await page.goto(srv.url);
+    await page.goto(p === 2 ? `${srv.url}?pilot=1` : srv.url); // 세 번째 봇은 예비(파일럿) 참가자
     await page.waitForFunction("window.__study?.phase === 'consent'");
     await page.getByRole('button', { name: '동의하고 시작' }).click();
     await waitPhase('consent');
@@ -124,7 +124,13 @@ try {
   const order = (pp: number) => main.filter((t) => t.participant === pp).map((t) => t.condition)[0];
   assert(order(0) !== order(1), '참가자마다 조건 순서가 번갈아 바뀜');
   const report = analyzeStudy(records);
-  assert(report.participants === 3 && report.warnings.some((w) => w.includes('부족')), '분석이 돌아가고, 표본이 작다는 경고를 냄');
+  assert(report.participants === 2 && report.warnings.some((w) => w.includes('부족')), '분석이 돌아가고(예비 참가자는 빠짐), 표본이 작다는 경고를 냄');
+  const adminPage = await browser.newPage();
+  await adminPage.goto(srv.adminUrl);
+  await adminPage.waitForFunction("document.querySelectorAll('#t tbody tr').length === 3 && document.getElementById('r').textContent.includes('참가자')", null, { timeout: 10_000 });
+  assert((await adminPage.locator('#t tbody').textContent())?.includes('(예비)'), '진행자 화면에 참가자 3명과 예비 표시가 보임');
+  if (shotsDir) await adminPage.screenshot({ path: path.join(shotsDir, 'study-admin.png') });
+  await adminPage.close();
   console.log('\n' + studyReportMarkdown(report, '하네스 자가 시험 — 실험 결과가 아님(봇이 두 조건에서 똑같이 행동)'));
   assert(errors.length === 0, `브라우저 오류 없음${errors.length ? `: ${errors.join(' | ')}` : ''}`);
   console.log('\n실험 도구 자가 시험 통과 ✅ (이 수치는 실험 결과가 아닙니다)');

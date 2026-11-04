@@ -100,8 +100,9 @@ async function consent() {
   await Promise.race([waitClick(yes), waitClick(no).then(() => Promise.reject(new Error('declined')))]);
 }
 
-async function background(): Promise<Record<string, unknown>> {
+async function background(requiresCode: boolean, error = ''): Promise<Record<string, unknown>> {
   hook.phase = 'background';
+  const code = h('input', { type: 'text', autocomplete: 'off', placeholder: '진행자가 알려준 코드' }) as HTMLInputElement;
   const dev = h('select', null, h('option', { value: '' }, '선택하세요'), h('option', { value: 'none' }, '없음 (개발자가 아님)'), h('option', { value: 'some' }, '조금 (배운 적 있음)'), h('option', { value: 'work' }, '업무로 개발함')) as HTMLSelectElement;
   const dash = h('select', null, ...[1, 2, 3, 4, 5].map((n) => h('option', { value: String(n) }, `${n} ${n === 1 ? '(거의 안 씀)' : n === 5 ? '(매일 씀)' : ''}`))) as HTMLSelectElement;
   const age = h('select', null, h('option', { value: '' }, '답하지 않음'), ...['10대', '20대', '30대', '40대', '50대', '60대 이상'].map((a) => h('option', { value: a }, a))) as HTMLSelectElement;
@@ -111,6 +112,8 @@ async function background(): Promise<Record<string, unknown>> {
     h('label', { class: 'field' }, '프로그램 개발 경험', dev),
     h('label', { class: 'field' }, '엑셀·관리자 화면 같은 표를 얼마나 자주 보나요?', dash),
     h('label', { class: 'field' }, '연령대(선택)', age),
+    requiresCode ? h('label', { class: 'field' }, '참가 코드', code) : null,
+    error ? h('p', { class: 'bad' }, error) : null,
     next,
   );
   for (;;) {
@@ -118,7 +121,7 @@ async function background(): Promise<Record<string, unknown>> {
     if (dev.value) break;
     dev.focus();
   }
-  return { developer: dev.value, dashboards: Number(dash.value), ageBand: age.value };
+  return { developer: dev.value, dashboards: Number(dash.value), ageBand: age.value, ...(requiresCode ? { code: code.value.trim() } : {}) };
 }
 
 function rulesCard(info: SessionInfo) {
@@ -310,6 +313,7 @@ const tip = h('div', { id: 'tooltip', class: 'hidden' });
 async function main() {
   await loadFonts();
   document.body.append(tip);
+  if (new URLSearchParams(location.search).get('pilot') === '1') document.body.append(h('div', { class: 'pilot-tag' }, '예비 실험(파일럿) — 본 분석에서 빠집니다'));
   try {
     await consent();
   } catch {
@@ -317,8 +321,18 @@ async function main() {
     screen(h('h2', null, '참여하지 않기로 하셨습니다'), h('p', null, '아무것도 기록하지 않았습니다. 창을 닫으셔도 됩니다.'));
     return;
   }
-  const bg = await background();
-  const info = await api.post<SessionInfo>('/api/study/session', bg);
+  const cfg = await api.get<{ requiresCode: boolean }>('/api/study/config');
+  const pilot = new URLSearchParams(location.search).get('pilot') === '1';
+  let info: SessionInfo | null = null;
+  let error = '';
+  while (!info) {
+    const bg = await background(cfg.requiresCode, error);
+    try {
+      info = await api.post<SessionInfo>('/api/study/session', { ...bg, pilot });
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    }
+  }
   const stage = h('div', { id: 'stage', class: 'study-stage hidden' });
   document.body.append(stage);
   const town = new Town({ onSelect: (id) => (town.select(id), worldSelect(id)), onHover: (id, x, y) => worldHover(id, x, y) });

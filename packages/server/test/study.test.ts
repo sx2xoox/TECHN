@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { analyzeStudy, bootstrapMedianCI, makeTrial, median, planTrials, readStudyRecords, startStudyServer, STUDY_ANOMALIES, studyGrammar, wilcoxon, type StudyRecord } from '../src/index.ts';
+import { analyzeStudy, bootstrapMedianCI, makeTrial, median, planTrials, readStudyRecords, startStudyServer, STUDY_ANOMALIES, studyCsv, studyGrammar, studyPower, wilcoxon, type StudyRecord } from '../src/index.ts';
 
 describe('study tasks', () => {
   const { schema, grammar } = studyGrammar();
@@ -43,7 +43,7 @@ describe('study statistics', () => {
     expect(hi).toBeLessThan(0.41);
     const recs: StudyRecord[] = [];
     for (let p = 0; p < 14; p++) {
-      recs.push({ type: 'session', participant: p, session: `s${p}`, background: { developer: 'none' } });
+      recs.push({ type: 'session', participant: p, session: `s${p}`, background: { developer: 'none' } }, { type: 'complete', participant: p });
       for (let i = 0; i < 4; i++) {
         const base = { type: 'trial' as const, participant: p, session: `s${p}`, practice: false, anomaly: 'negative_stock', diagnoseCorrect: true, gaveUp: false, timedOut: false };
         recs.push({ ...base, condition: 'world', locateCorrect: true, timeMs: 4000 + p * 100 + i * 50 });
@@ -92,5 +92,86 @@ describe('study server', () => {
       await srv.close();
       fs.rmSync(dataDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('running a study', () => {
+  async function server(extra: Record<string, unknown> = {}) {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'study-ops-'));
+    const srv = await startStudyServer({ port: 0, staticDir: dataDir, dataDir, perCondition: 5, practicePerCondition: 1, adminToken: 'secret-token', ...extra });
+    const base = `http://127.0.0.1:${srv.port}`;
+    const post = (p: string, body: unknown, headers: Record<string, string> = {}) => fetch(base + p, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
+    /** 참가자 한 명을 끝까지(모든 과제에 '없음' 으로 답하고 설문까지) */
+    const participant = async (bg: Record<string, unknown>) => {
+      const info = (await (await post('/api/study/session', bg)).json()) as { session: string; total: number };
+      for (let key = 0; key < info.total; key++) await post('/api/study/answer', { session: info.session, key, answer: null, choice: 'none', timeMs: 1000 + key });
+      await post('/api/study/questionnaire', { session: info.session, condition: 'final', final: true, preference: 'same' });
+      return info;
+    };
+    return { srv, dataDir, base, post, participant, done: async () => (await srv.close(), fs.rmSync(dataDir, { recursive: true, force: true })) };
+  }
+
+  it('protects the experimenter view and keeps pilot, excluded and unfinished sessions out of the analysis', async () => {
+    const t = await server();
+    try {
+      expect((await fetch(`${t.base}/api/study/admin/sessions`)).status).toBe(403);
+      expect((await fetch(`${t.base}/study/admin?token=wrong`)).status).toBe(403);
+      expect((await fetch(`${t.base}/study/admin?token=secret-token`)).status).toBe(200);
+      await t.participant({ developer: 'none', pilot: true });
+      await t.participant({ developer: 'none' });
+      await t.participant({ developer: 'work' });
+      await t.post('/api/study/session', { developer: 'none' }); // 시작만 하고 그만둔 참가자
+      const admin = { 'x-study-admin': 'secret-token' };
+      expect((await t.post('/api/study/admin/exclude', { participant: 2, reason: '' }, admin)).status).toBe(400);
+      expect((await t.post('/api/study/admin/exclude', { participant: 2, reason: '과제 설명을 이해하지 못함(사전 기준 3)' }, admin)).status).toBe(200);
+      const list = (await (await fetch(`${t.base}/api/study/admin/sessions`, { headers: admin })).json()) as { sessions: { participant: number; pilot: boolean; complete: boolean; excluded: string | null }[] };
+      expect(list.sessions.map((s) => [s.participant, s.pilot, s.complete, !!s.excluded])).toEqual([[0, true, true, false], [1, false, true, false], [2, false, true, true], [3, false, false, false]]);
+      const records = readStudyRecords(t.dataDir);
+      expect(analyzeStudy(records).participants).toBe(1); // 1번만: 0 예비, 2 제외, 3 미완료
+      expect(analyzeStudy(records, { includePilot: true }).participants).toBe(2);
+      const csv = studyCsv(records).trim().split('\n');
+      expect(csv[0]).toContain('participant,group');
+      expect(csv.length - 1).toBe(10); // 1번 참가자의 본 과제 10개
+      const report = (await (await fetch(`${t.base}/api/study/admin/report`, { headers: admin })).json()) as { markdown: string };
+      expect(report.markdown).toContain('분석에서 빠졌습니다');
+    } finally {
+      await t.done();
+    }
+  });
+
+  it('deletes a withdrawn participant and never reuses their number', async () => {
+    const t = await server();
+    try {
+      await t.participant({ developer: 'none' });
+      await t.participant({ developer: 'none' });
+      const admin = { 'x-study-admin': 'secret-token' };
+      expect((await (await t.post('/api/study/admin/withdraw', { participant: 1 }, admin)).json())).toMatchObject({ ok: true, deleted: 1 });
+      expect(readStudyRecords(t.dataDir).some((r) => r.participant === 1)).toBe(false);
+      expect(fs.readFileSync(path.join(t.dataDir, 'withdrawals.log'), 'utf8')).toMatch(/p1 기록 1개 삭제/);
+      const next = (await (await t.post('/api/study/session', { developer: 'none' })).json()) as { participant: number };
+      expect(next.participant).toBe(2);
+    } finally {
+      await t.done();
+    }
+  });
+
+  it('requires an access code when one is set, and refuses to open on an external address without one', async () => {
+    const t = await server({ accessCode: 'tiger-42' });
+    try {
+      expect(await (await fetch(`${t.base}/api/study/config`)).json()).toEqual({ requiresCode: true });
+      expect((await t.post('/api/study/session', { developer: 'none', code: 'nope' })).status).toBe(403);
+      expect((await t.post('/api/study/session', { developer: 'none', code: 'tiger-42' })).status).toBe(200);
+    } finally {
+      await t.done();
+    }
+    await expect(startStudyServer({ port: 0, host: '0.0.0.0', staticDir: os.tmpdir(), dataDir: fs.mkdtempSync(path.join(os.tmpdir(), 'study-ext-')) })).rejects.toThrow(/참가 코드/);
+  });
+
+  it('estimates power for the KPI criterion', () => {
+    const strong = studyPower({ n: 30, trueRatio: 0.3, logSd: 0.4, sims: 60 });
+    const none = studyPower({ n: 30, trueRatio: 1, logSd: 0.4, sims: 60 });
+    expect(strong.kpi).toBeGreaterThan(0.8);
+    expect(none.kpi).toBe(0);
+    expect(none.wilcoxon).toBeLessThan(0.2);
   });
 });
