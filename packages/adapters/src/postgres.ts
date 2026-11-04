@@ -15,7 +15,18 @@ export interface PostgresAdapterOptions {
   tables?: string[];
   rowLimit?: number;
   system?: string;
+  /**
+   * 푸시 관측(선택, 대상 DB 에 트리거를 설치함):
+   *  - 'listen': 문장 단위 트리거가 pg_notify → 별도 연결에서 LISTEN (PostgreSQL)
+   *  - 'log'   : 트리거가 isomorph_change_log 에 기록 → feedMs 간격으로 아주 가볍게 확인
+   *              (알림을 전달하지 않는 호환 DB·프록시에서도 동작)
+   */
+  changeFeed?: 'listen' | 'log';
+  feedMs?: number;
 }
+
+export const FEED_TABLE = 'isomorph_change_log';
+const FEED_CHANNEL = 'isomorph_changes';
 
 function mapType(dataType: string, udt: string, enums: Map<string, string[]>): { type: FieldType; enumValues?: string[] } {
   const t = dataType.toLowerCase();
@@ -120,6 +131,7 @@ export class PostgresAdapter implements Adapter {
     for (const r of cols) {
       const table = String(r.table_name);
       if (this.opts.tables && !this.opts.tables.includes(table)) continue;
+      if (table.startsWith('isomorph_')) continue; // ISOMORPH 자신의 보조 테이블은 세계에 그리지 않는다
       const c = tables.get(table) ?? { name: table, primaryKey: '', fields: [] };
       const { type, enumValues } = mapType(String(r.data_type), String(r.udt_name), enums);
       c.fields.push({ name: String(r.column_name), type, nullable: r.is_nullable === 'YES', ...(enumValues ? { enumValues } : {}) });
@@ -155,12 +167,13 @@ export class PostgresAdapter implements Adapter {
     return schema;
   }
 
-  async snapshot(): Promise<Snapshot> {
+  async snapshot(only?: string[]): Promise<Snapshot> {
     const db = this.q();
     const schema = this.cached ?? (await this.introspect());
     const limit = this.opts.rowLimit ?? 500;
     const collections: Snapshot['collections'] = {};
     for (const c of schema.collections) {
+      if (only && !only.includes(c.name)) continue;
       const res = await db.query(`select * from ${quoteIdent(this.schemaName)}.${quoteIdent(c.name)} order by ${quoteIdent(c.primaryKey)} desc limit ${Number(limit)}`);
       collections[c.name] = res.rows.reverse().map((r) => normalizeRow(r, schema, c.name));
     }
@@ -195,6 +208,88 @@ export class PostgresAdapter implements Adapter {
     const res = await this.q().query(`update ${quoteIdent(this.schemaName)}.${quoteIdent(cmd.collection)} set ${sets} where ${where.join(' and ')}`, params);
     const n = res.rowCount ?? res.affectedRows ?? 0;
     if (n !== 1) throw new ConflictError();
+  }
+
+  private feedSql(mode: 'listen' | 'log') {
+    const sc = quoteIdent(this.schemaName);
+    const fn = `${sc}.${quoteIdent(`isomorph_feed_${mode}`)}`;
+    const body = mode === 'listen'
+      ? `perform pg_notify('${FEED_CHANNEL}', TG_TABLE_NAME);`
+      : `insert into ${sc}.${quoteIdent(FEED_TABLE)} (tbl) values (TG_TABLE_NAME);`;
+    return { sc, fn, body };
+  }
+
+  /** 문장 단위(FOR EACH STATEMENT) 트리거 설치 — 행마다가 아니라 문장마다 한 번이라 부담이 작다 */
+  async installFeed(mode: 'listen' | 'log'): Promise<void> {
+    const db = this.q();
+    const schema = this.cached ?? (await this.introspect());
+    const { sc, fn, body } = this.feedSql(mode);
+    if (mode === 'log') {
+      await db.query(`create table if not exists ${sc}.${quoteIdent(FEED_TABLE)} (id bigserial primary key, tbl text not null, at timestamptz not null default clock_timestamp())`);
+    }
+    await db.query(`create or replace function ${fn}() returns trigger language plpgsql as $$ begin ${body} return null; end $$`);
+    for (const c of schema.collections) {
+      const t = `${sc}.${quoteIdent(c.name)}`;
+      await db.query(`drop trigger if exists isomorph_feed on ${t}`);
+      await db.query(`create trigger isomorph_feed after insert or update or delete on ${t} for each statement execute function ${fn}()`);
+    }
+  }
+
+  /** 설치한 트리거·함수·로그 테이블을 모두 제거한다 */
+  async uninstallFeed(): Promise<void> {
+    const db = this.q();
+    const schema = this.cached ?? (await this.introspect());
+    const sc = quoteIdent(this.schemaName);
+    for (const c of schema.collections) await db.query(`drop trigger if exists isomorph_feed on ${sc}.${quoteIdent(c.name)}`);
+    await db.query(`drop function if exists ${sc}.isomorph_feed_listen()`);
+    await db.query(`drop function if exists ${sc}.isomorph_feed_log()`);
+    await db.query(`drop table if exists ${sc}.${quoteIdent(FEED_TABLE)}`);
+  }
+
+  async watch(onChange: (collections: string[]) => void): Promise<(() => Promise<void>) | null> {
+    const mode = this.opts.changeFeed;
+    if (!mode) return null;
+    await this.installFeed(mode);
+    if (mode === 'listen') {
+      if (!this.opts.connectionString) throw new Error("changeFeed 'listen' 에는 connectionString 이 필요합니다");
+      const listener = new pg.Client({ connectionString: this.opts.connectionString });
+      await listener.connect();
+      listener.on('notification', (m) => m.payload && onChange([m.payload]));
+      await listener.query(`listen ${FEED_CHANNEL}`);
+      return async () => {
+        await listener.end().catch(() => {});
+      };
+    }
+    // 'log' 모드: 마지막으로 본 id 이후의 변경만 확인
+    const db = this.q();
+    const table = `${quoteIdent(this.schemaName)}.${quoteIdent(FEED_TABLE)}`;
+    let last = Number((await db.query(`select coalesce(max(id), 0) as id from ${table}`)).rows[0].id);
+    let stopped = false;
+    let busy = false;
+    let sincePrune = 0;
+    const timer = setInterval(async () => {
+      if (stopped || busy) return;
+      busy = true;
+      try {
+        const rows = (await db.query(`select id, tbl from ${table} where id > $1 order by id limit 2000`, [last])).rows;
+        if (rows.length) {
+          last = Number(rows[rows.length - 1].id);
+          onChange([...new Set(rows.map((r) => String(r.tbl)))]);
+        }
+        if ((sincePrune += 1) > 200) {
+          sincePrune = 0;
+          await db.query(`delete from ${table} where at < now() - interval '10 minutes'`);
+        }
+      } catch {
+        /* 다음 주기에 다시 */
+      } finally {
+        busy = false;
+      }
+    }, this.opts.feedMs ?? 50);
+    return async () => {
+      stopped = true;
+      clearInterval(timer);
+    };
   }
 
   async close() {

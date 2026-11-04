@@ -90,7 +90,7 @@ export class DockerAdapter implements Adapter {
     return this.schema;
   }
 
-  async snapshot(): Promise<Snapshot> {
+  async snapshot(_only?: string[]): Promise<Snapshot> {
     const r = await this.request<DockerContainer[]>('GET', '/containers/json?all=1');
     if (r.status !== 200) throw new Error(`컨테이너 목록 실패 (${r.status})`);
     const limit = this.opts.statsLimit ?? 20;

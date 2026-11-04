@@ -111,6 +111,25 @@ describe('IsomorphRuntime end-to-end on the demo shop', () => {
   });
 });
 
+describe('push observation', () => {
+  it('reflects a DB change in the world without waiting for the poll interval', async () => {
+    const live = new IsomorphRuntime({ adapter: new PostgresAdapter({ connectionString: shop.pgUrl, system: 'demo-shop', changeFeed: 'log', feedMs: 20 }), grammar: rt.grammar, numRuns: 20, pollMs: 60_000 });
+    expect(await live.start()).toBe('running');
+    expect(live.feedActive).toBe(true);
+    const lit = () => live.world!.entities.find((e) => e.id === 'products:2')!.visual.lit;
+    expect(lit()).toBe(true);
+    const t0 = Date.now();
+    await shop.db.query('update products set active = false where id = 2');
+    while (lit() !== false && Date.now() - t0 < 3000) await new Promise((r) => setTimeout(r, 5));
+    const ms = Date.now() - t0;
+    expect(lit()).toBe(false);
+    expect(ms).toBeLessThan(400); // 폴링 주기는 60초 — 알림이 아니면 불가능한 속도
+    await shop.db.query('update products set active = true where id = 2');
+    await live.stop();
+    await new PostgresAdapter({ queryable: shop.db }).uninstallFeed();
+  });
+});
+
 describe('safety rails', () => {
   it('refuses to open a world whose lens is unlawful', async () => {
     const grammar = JSON.parse(JSON.stringify(rt.grammar)) as WorldGrammar;

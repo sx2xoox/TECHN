@@ -3,7 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { attachStats, formatReport, verifyGrammar } from '@isomorph/core';
 import { anthropicDraftModel, compile } from '@isomorph/compiler';
-import { createAdapter } from '@isomorph/adapters';
+import { createAdapter, PostgresAdapter } from '@isomorph/adapters';
 import { loadAssets, loadConfig, loadGrammar } from './config.ts';
 import { IsomorphRuntime } from './runtime.ts';
 import { serve } from './server.ts';
@@ -12,6 +12,7 @@ import { serve } from './server.ts';
  * isomorph serve   --config isomorph.config.json   세계를 연다
  * isomorph compile --config isomorph.config.json --out world.json   문법만 컴파일·검증해 저장
  * isomorph verify  --config isomorph.config.json --grammar world.json   기존 문법 검증
+ * isomorph uninstall-feed --config isomorph.config.json   푸시 관측 트리거 제거
  */
 const here = path.dirname(fileURLToPath(import.meta.url));
 const args = process.argv.slice(2);
@@ -27,6 +28,16 @@ async function main() {
   const config = loadConfig(configPath);
   const adapter = createAdapter(config.adapter);
   const llmModel = config.compile?.model ? anthropicDraftModel({ model: config.compile.model }) : undefined;
+
+  if (cmd === 'uninstall-feed') {
+    // 푸시 관측용으로 설치한 트리거·함수·로그 테이블 제거
+    if (!(adapter instanceof PostgresAdapter)) throw new Error('uninstall-feed 는 postgres 어댑터에만 해당합니다');
+    await adapter.connect();
+    await adapter.uninstallFeed();
+    log('변경 알림 트리거를 모두 제거했습니다');
+    await adapter.close();
+    return;
+  }
 
   if (cmd === 'compile' || cmd === 'verify') {
     await adapter.connect();

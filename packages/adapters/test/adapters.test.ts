@@ -74,6 +74,34 @@ describe('PostgresAdapter', () => {
   });
 });
 
+describe('PostgresAdapter change feed (push observation)', () => {
+  it("'log' mode notifies changed tables within milliseconds and uninstalls cleanly", async () => {
+    const a = new PostgresAdapter({ connectionString: shop.pgUrl, system: 'demo-shop', changeFeed: 'log', feedMs: 20 });
+    await a.connect();
+    await a.introspect();
+    const seen: { cols: string[]; at: number }[] = [];
+    const stop = await a.watch((cols) => seen.push({ cols, at: Date.now() }));
+    expect(stop).toBeTypeOf('function');
+    // 보조 테이블은 세계의 컬렉션이 아니다
+    const again = await new PostgresAdapter({ queryable: shop.db }).introspect();
+    expect(again.collections.map((c) => c.name)).not.toContain('isomorph_change_log');
+    const t0 = Date.now();
+    await shop.db.query('update products set price = price where id = 1');
+    await new Promise((r) => setTimeout(r, 300));
+    expect(seen.length).toBeGreaterThanOrEqual(1);
+    expect(seen[0].cols).toEqual(['products']);
+    expect(seen[0].at - t0).toBeLessThan(200);
+    // 부분 스냅샷: 바뀐 테이블만 읽는다
+    const part = await a.snapshot(['products']);
+    expect(Object.keys(part.collections)).toEqual(['products']);
+    await stop!();
+    await a.uninstallFeed();
+    const left = (await shop.db.query<{ n: number }>("select count(*)::int as n from pg_trigger where tgname = 'isomorph_feed'")).rows[0].n;
+    expect(left).toBe(0);
+    await a.close();
+  });
+});
+
 describe('HttpJsonAdapter', () => {
   it('infers a schema from samples and writes with PATCH', async () => {
     const a = new HttpJsonAdapter({

@@ -2,11 +2,15 @@
   "adapter": {
     "type": "postgres",
     "connectionString": "postgres://postgres@127.0.0.1:5433/postgres",
-    "system": "demo-shop"
+    "system": "demo-shop",
+    "changeFeed": "log",
+    "feedMs": 50
   },
-  "compile": { "mode": "auto" },
+  "compile": {
+    "mode": "auto"
+  },
   "writeMode": "medium",
-  "pollMs": 500,
+  "pollMs": 1000,
   "port": 4000,
   "storePath": ".data/events.sqlite",
   "numRuns": 150,

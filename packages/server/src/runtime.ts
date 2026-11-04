@@ -142,6 +142,7 @@ export class IsomorphRuntime extends EventEmitter {
       this.status = 'running';
       this.emit('status', this.status);
       this.schedule();
+      await this.startFeed();
       return this.status;
     } catch (e) {
       this.status = 'error';
@@ -158,6 +159,39 @@ export class IsomorphRuntime extends EventEmitter {
   }
 
   private inflight: Promise<WorldState | null> | null = null;
+  private unwatch: (() => Promise<void>) | null = null;
+  private feedDirty = new Set<string>();
+  private feedTimer: NodeJS.Timeout | null = null;
+  /** 변경 알림(푸시)으로 관측 중인가 */
+  feedActive = false;
+
+  /** 어댑터가 변경 알림을 지원하고 설정돼 있으면 켠다. 실패해도 폴링은 계속된다. */
+  private async startFeed() {
+    if (!this.adapter.watch) return;
+    try {
+      this.unwatch = await this.adapter.watch((cols) => this.onFeed(cols));
+      if (this.unwatch) {
+        this.feedActive = true;
+        this.log('푸시 관측 켜짐: 변경이 생기면 즉시 다시 관측합니다(폴링은 안전망으로 유지)');
+      }
+    } catch (e) {
+      this.log(`푸시 관측을 켜지 못해 폴링만 사용합니다: ${e instanceof Error ? e.message : e}`);
+    }
+  }
+
+  /** 짧은 시간 안에 몰린 알림은 한 번의 부분 관측으로 합친다 */
+  private onFeed(cols: string[]) {
+    for (const c of cols) this.feedDirty.add(c);
+    if (this.feedTimer || this.status !== 'running') return;
+    this.feedTimer = setTimeout(async () => {
+      this.feedTimer = null;
+      const only = [...this.feedDirty].filter((c) => this.schema.collections.some((x) => x.name === c));
+      this.feedDirty.clear();
+      if (!only.length) return;
+      if (this.inflight) await this.inflight.catch(() => null);
+      if (!this.inflight) this.inflight = this.doTick(only).finally(() => (this.inflight = null));
+    }, 10);
+  }
 
   /** 한 번 관측: 스냅샷 → 이벤트 저장 → 세계 갱신 → 검증 대기 중인 행동 확인 (진행 중이면 그 결과를 공유) */
   tick(): Promise<WorldState | null> {
@@ -171,10 +205,12 @@ export class IsomorphRuntime extends EventEmitter {
     return this.tick();
   }
 
-  private async doTick(): Promise<WorldState | null> {
+  private async doTick(only?: string[]): Promise<WorldState | null> {
     try {
       const started = Date.now();
-      const snap = await this.adapter.snapshot();
+      const part = await this.adapter.snapshot(only);
+      // 부분 관측이면 나머지 컬렉션은 직전 상태를 그대로 쓴다
+      const snap = only && this.lastSnapshot ? { ts: part.ts, collections: { ...this.lastSnapshot.collections, ...part.collections } } : part;
       this.ingest(snap, started);
       return this.world;
     } catch (e) {
@@ -447,6 +483,9 @@ export class IsomorphRuntime extends EventEmitter {
     this.status = 'stopped';
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
+    if (this.feedTimer) clearTimeout(this.feedTimer);
+    await this.unwatch?.().catch(() => {});
+    this.unwatch = null;
     await this.adapter.close();
     this.store.close();
   }

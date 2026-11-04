@@ -83,6 +83,22 @@ describe.skipIf(!PG_URL)('PostgresAdapter on a real PostgreSQL server', () => {
     expect((await admin.query(`select open from ${schemaName}.warehouses where id = 1`)).rows[0].open).toBe(false);
     await a.close();
   });
+
+  it("delivers LISTEN/NOTIFY change notifications ('listen' mode)", async () => {
+    const a = new PostgresAdapter({ connectionString: PG_URL, schema: schemaName, system: 'real-pg', changeFeed: 'listen' });
+    await a.connect();
+    await a.introspect();
+    const seen: string[][] = [];
+    const stop = await a.watch((cols) => seen.push(cols));
+    const t0 = Date.now();
+    await admin.query(`update ${schemaName}.shipments set status = 'delivered' where id = 1`);
+    for (let i = 0; i < 50 && !seen.length; i++) await new Promise((r) => setTimeout(r, 10));
+    expect(seen[0]).toEqual(['shipments']);
+    expect(Date.now() - t0).toBeLessThan(500);
+    await stop!();
+    await a.uninstallFeed();
+    await a.close();
+  });
 });
 
 describe.skipIf(!DOCKER)('DockerAdapter on a real Docker daemon', () => {

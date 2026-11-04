@@ -60,7 +60,7 @@ export class HttpJsonAdapter implements Adapter {
     return this.schema;
   }
 
-  async snapshot(): Promise<Snapshot> {
+  async snapshot(_only?: string[]): Promise<Snapshot> {
     const schema = this.schema ?? (await this.introspect());
     const collections: Snapshot['collections'] = {};
     await Promise.all(

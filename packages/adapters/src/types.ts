@@ -6,7 +6,13 @@ export interface Adapter {
   readonly system: string;
   connect(): Promise<void>;
   introspect(): Promise<SystemSchema>;
-  snapshot(): Promise<Snapshot>;
+  /** only 가 있으면 그 컬렉션만 읽는다(변경 알림을 받은 테이블만 다시 읽기) */
+  snapshot(only?: string[]): Promise<Snapshot>;
+  /**
+   * 선택: 변경 즉시 알림(푸시 관측). 설정이 꺼져 있으면 null.
+   * onChange 는 바뀐 컬렉션 이름들을 받는다. 반환값은 구독 해제 함수.
+   */
+  watch?(onChange: (collections: string[]) => void): Promise<(() => Promise<void>) | null>;
   /** 명령 실행. 변경 전 값(before)이 현재와 다르면 ConflictError (낙관적 동시성) */
   execute(cmd: UpdateCommand): Promise<void>;
   /** 드라이런 화면에 보여줄 사람이 읽을 수 있는 명령 (SQL·HTTP) */
