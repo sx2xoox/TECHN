@@ -1,0 +1,12 @@
+{
+  "adapter": {
+    "type": "module",
+    "path": "./adapters/claude-code.ts",
+    "options": { "projectDir": "~/.claude/projects/<프로젝트-폴더>" }
+  },
+  "compile": { "mode": "heuristic" },
+  "writeMode": "read-only",
+  "pollMs": 2000,
+  "port": 4003,
+  "storePath": "../.data/events-claude-code.sqlite"
+}

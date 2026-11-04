@@ -25,8 +25,8 @@ export const PLACE_GROUPS: PlaceGroup[] = [
   { re: /(product|item|inventor|stock|sku|goods|warehouse|depot|stockroom)/i, sprite: 'warehouse', title: '창고', region: R.market },
   { re: /(customer|user|member|patient|student|person|people|employee|citizen|client|resident|owner|author|subscriber|player)/i, sprite: 'house', title: '집', region: R.residential },
   { re: /(account|wallet|payment|invoice|bank|ledger|budget|fund)/i, sprite: 'bank', title: '은행', region: R.finance },
-  { re: /(container|server|node|host|service|pod|machine|instance|worker|cluster|vm|deployment|process|truck|vehicle)/i, sprite: 'factory', title: '공장', region: R.industrial },
-  { re: /(book|library|article|document|post|page|wiki|course|class|lesson|school)/i, sprite: 'library', title: '도서관', region: R.civic },
+  { re: /(container|server|node|host|service|pod|machine|instance|worker|cluster|vm|deployment|process|truck|vehicle|tool|workshop|plugin|skill)/i, sprite: 'factory', title: '공장', region: R.industrial },
+  { re: /(book|library|article|document|post|page|wiki|course|class|lesson|school|file|memory|note)/i, sprite: 'library', title: '도서관', region: R.civic },
   { re: /(doctor|hospital|ward|clinic|room|bed|nurse)/i, sprite: 'clinic', title: '진료소', region: R.civic },
   { re: /(sensor|device|meter|station|tower|antenna|gateway|probe)/i, sprite: 'tower', title: '관측탑', region: R.industrial },
   { re: /(store|shop|merchant|vendor|seller|restaurant|branch|location)/i, sprite: 'shop', title: '가게', region: R.market },
@@ -43,7 +43,7 @@ export interface WalkerGroup {
 export const WALKER_GROUPS: WalkerGroup[] = [
   { re: /(order|purchase|sale|cart|checkout|booking|reservation|transfer|transaction|trade)/i, sprite: 'merchant', title: '상인' },
   { re: /(shipment|delivery|message|parcel|package|dispatch|notification)/i, sprite: 'courier', title: '배달부' },
-  { re: /(request|job|task|log|event|reading|metric|sample|alert|run|build|incident)/i, sprite: 'robot', title: '일꾼 로봇' },
+  { re: /(request|job|task|log|event|reading|metric|sample|alert|run|build|incident|call|invocation|step)/i, sprite: 'robot', title: '일꾼 로봇' },
 ];
 export const DEFAULT_WALKER: WalkerGroup = { re: /.*/, sprite: 'villager', title: '주민' };
 
@@ -53,14 +53,14 @@ export const LANDMARK_RE = /(stat|metric|health|summary|overview|dashboard|confi
 export const LABEL_RE = /^(name|title|label|hostname|display_name|full_name|username|nickname|plate|sku|code|slug)$/i;
 export const STACK_RE = /(stock|quantity|qty|inventor|available|remaining|units|capacity_left|seats|beds_available|copies|balance|free)/i;
 export const RESTOCK_RE = /(stock|inventor|quantity|qty|available|units|copies|seats|beds)/i;
-export const CROWD_RE = /(request|rps|qps|throughput|visitor|traffic|connection|session|online_users|active_users|load|queue|pending|backlog|cpu|usage|utiliz|mem|enrolled|followers|views|count$|used)/i;
+export const CROWD_RE = /(calls?$|calls_|request|rps|qps|throughput|visitor|traffic|connection|session|online_users|active_users|load|queue|pending|backlog|cpu|usage|utiliz|mem|enrolled|followers|views|count$|used)/i;
 export const FIRE_RE = /(error|fail|exception|crash|incident|alert|restart|reject|drop)/i;
 export const SPEED_RE = /(latency|duration|response_time|delay|_ms$|elapsed|wait|p9\d)/i;
 export const MONEY_RE = /(price|cost|amount|fee|salary|revenue|total$|payment)/i;
 export const LIT_RE = /(active|enabled|open|available|online|published|visible|ready|healthy|on_call|in_stock|verified|^is_)/i;
-export const FOG_RE = /(blocked|disabled|banned|offline|locked|deleted|archived|hidden|frozen|suspended|muted)/i;
+export const FOG_RE = /(blocked|disabled|banned|offline|locked|deleted|archived|hidden|frozen|suspended|muted|outside|external|foreign)/i;
 export const ENUM_RE = /(status|state|phase|stage|level|tier|type|kind|category|role|priority|plan|severity|condition|grade|specialty)/i;
-export const SIGN_RE = /(image|city|location|region|category|brand|author|model|specialty|namespace|destination|zone|genre)/i;
+export const SIGN_RE = /(image|city|location|region|category|brand|author|model|specialty|namespace|destination|zone|genre|dir$|folder)/i;
 export const CREATED_RE = /^(created|inserted|opened|started|issued|recorded|scheduled|admitted)(_at|_on|_time)?$/i;
 export const RUNNING_VALUES = ['running', 'active', 'open', 'online', 'healthy', 'up', 'ready', 'ok', 'enabled', 'available', 'published'];
 export const STOPPED_VALUES = ['exited', 'stopped', 'inactive', 'closed', 'offline', 'down', 'disabled', 'paused', 'dead'];

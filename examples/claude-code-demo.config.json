@@ -1,0 +1,12 @@
+{
+  "adapter": {
+    "type": "module",
+    "path": "./adapters/claude-code.ts",
+    "options": { "transcript": "../.data/fake-session/session.jsonl", "cwd": "/work/demo-project" }
+  },
+  "compile": { "mode": "heuristic" },
+  "writeMode": "read-only",
+  "pollMs": 2000,
+  "port": 4003,
+  "storePath": ":memory:"
+}

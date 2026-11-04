@@ -2,7 +2,7 @@ import type { Row, Snapshot, SystemSchema, UpdateCommand } from '@isomorph/core'
 
 /** 실제 시스템과 ISOMORPH 사이의 유일한 통로. 읽기(introspect/snapshot)와 쓰기(execute)를 분리한다. */
 export interface Adapter {
-  readonly kind: 'postgres' | 'http' | 'docker';
+  readonly kind: 'postgres' | 'http' | 'docker' | 'custom';
   readonly system: string;
   connect(): Promise<void>;
   introspect(): Promise<SystemSchema>;

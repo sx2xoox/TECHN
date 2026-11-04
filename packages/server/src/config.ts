@@ -25,7 +25,12 @@ export function loadConfig(file: string): IsomorphConfig {
   const raw = JSON.parse(fs.readFileSync(file, 'utf8')) as IsomorphConfig;
   const base = path.dirname(path.resolve(file));
   const rel = (p?: string) => (p ? path.resolve(base, p) : undefined);
-  return { ...raw, grammarPath: rel(raw.grammarPath), storePath: raw.storePath === ':memory:' ? raw.storePath : rel(raw.storePath), assetsDir: rel(raw.assetsDir) };
+  const relOpt = (v: unknown) => (typeof v === 'string' && (v.startsWith('./') || v.startsWith('../')) ? rel(v) : v);
+  const adapter =
+    raw.adapter.type === 'module'
+      ? { ...raw.adapter, path: rel(raw.adapter.path)!, options: Object.fromEntries(Object.entries(raw.adapter.options ?? {}).map(([k, v]) => [k, relOpt(v)])) }
+      : raw.adapter;
+  return { ...raw, adapter, grammarPath: rel(raw.grammarPath), storePath: raw.storePath === ':memory:' ? raw.storePath : rel(raw.storePath), assetsDir: rel(raw.assetsDir) };
 }
 
 export function loadGrammar(file: string): WorldGrammar {

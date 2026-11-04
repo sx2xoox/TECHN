@@ -3,7 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { attachStats, formatReport, verifyGrammar } from '@isomorph/core';
 import { anthropicDraftModel, compile } from '@isomorph/compiler';
-import { createAdapter, PostgresAdapter } from '@isomorph/adapters';
+import { loadAdapter, PostgresAdapter } from '@isomorph/adapters';
 import { loadAssets, loadConfig, loadGrammar } from './config.ts';
 import { IsomorphRuntime } from './runtime.ts';
 import { serve } from './server.ts';
@@ -26,7 +26,7 @@ const log = (m: string) => console.log(`[isomorph] ${m}`);
 
 async function main() {
   const config = loadConfig(configPath);
-  const adapter = createAdapter(config.adapter);
+  const adapter = await loadAdapter(config.adapter);
   const llmModel = config.compile?.model ? anthropicDraftModel({ model: config.compile.model }) : undefined;
 
   if (cmd === 'uninstall-feed') {

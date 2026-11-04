@@ -18,7 +18,8 @@
     "assets": "tsx packages/assets/src/cli.ts",
     "e2e": "tsx scripts/e2e.ts",
     "bench:latency": "tsx scripts/bench-latency.ts",
-    "stress": "echo \"브라우저에서 http://127.0.0.1:4000/?stress=10000 (npm run demo 실행 중)\""
+    "stress": "echo \"브라우저에서 http://127.0.0.1:4000/?stress=10000 (npm run demo 실행 중)\"",
+    "demo:agent": "tsx scripts/demo-agent.ts"
   },
   "engines": {
     "node": ">=22.13"
