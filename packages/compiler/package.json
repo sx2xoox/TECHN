@@ -3,6 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "exports": { ".": "./src/index.ts" },
-  "dependencies": { "@isomorph/core": "*", "@anthropic-ai/sdk": "*" }
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@isomorph/core": "*",
+    "@anthropic-ai/sdk": "^1.4.0",
+    "zod": "^4.1.0"
+  }
 }
