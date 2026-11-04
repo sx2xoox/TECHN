@@ -22,7 +22,10 @@
     "demo:agent": "tsx scripts/demo-agent.ts",
     "bench:lab": "tsx scripts/bench-lab.ts",
     "bench:real": "tsx scripts/bench-real-schemas.ts",
-    "bench:heldout": "tsx scripts/bench-heldout-schemas.ts"
+    "bench:heldout": "tsx scripts/bench-heldout-schemas.ts",
+    "study": "tsx scripts/study.ts",
+    "study:analyze": "tsx scripts/study-analyze.ts",
+    "study:selftest": "tsx scripts/study-selftest.ts"
   },
   "engines": {
     "node": ">=22.13"

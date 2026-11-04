@@ -40,7 +40,7 @@ const MIME: Record<string, string> = {
   '.ico': 'image/x-icon',
 };
 
-function serveFile(res: http.ServerResponse, root: string, rel: string): boolean {
+export function serveFile(res: http.ServerResponse, root: string, rel: string): boolean {
   const file = path.normalize(path.join(root, rel));
   if (!file.startsWith(path.normalize(root))) return false;
   if (!fs.existsSync(file) || !fs.statSync(file).isFile()) return false;
