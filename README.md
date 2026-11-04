@@ -308,6 +308,36 @@ export default () =>
 
 설정에서 `{ "type": "module", "path": "./my-adapter.ts" }` 로 불러옵니다. 스키마를 주지 않으면 타입, `xxx_id` 참조, 민감 필드를 표본에서 추론합니다. `write` 가 없으면 읽기 전용이고, `watch` 가 있으면 즉시 반영됩니다.
 
+### OpenTelemetry 트레이스 — 서비스들이 서로 부르는 모습
+
+![OpenTelemetry 트레이스 세계 — 오류가 나는 서비스에 불길, 호출마다 걷는 로봇](docs/screenshots/17-otel.png)
+
+ISOMORPH 가 OTLP/HTTP 수신기(JSON, 표준 포트 4318)가 되어, 이미 OpenTelemetry 로 계측된 앱의 트레이스를 그대로 받습니다.
+
+- 서비스(`service.name`)는 건물이 됩니다. 분당 호출은 인파, 오류 수는 불길, 평균 지연은 걸음, 상태(정상·주의·실패)는 색입니다.
+- 최근 스팬은 걷는 로봇이 됩니다. 부모 스팬의 서비스가 다르면 그 서비스에서 이 서비스로 걸어갑니다.
+- 트레이스는 지나간 기록이라 읽기 전용입니다.
+
+```bash
+npm run build && npm run demo:otel
+```
+
+데모는 **진짜 OpenTelemetry SDK**(공식 `@opentelemetry/sdk-trace-node` + OTLP 내보내기)로 계측한 서비스 두 개를 띄웁니다. `web` 이 `payments` 를 HTTP 로 부르고, W3C traceparent 로 문맥을 전파합니다([`examples/otel/two-services.ts`](examples/otel/two-services.ts)).
+
+이 코드는 ISOMORPH 와 무관한 공식 라이브러리만 쓰며, 시험은 아래를 확인합니다.
+
+- 내보낸 스팬 72개를 모두 받습니다.
+- 서비스 사이의 부모·자식 관계로 '부른 쪽'을 찾습니다.
+- 사람 손 없이 법칙을 통과한 세계가 열리고, 오류 스팬이 실패 색으로 보입니다(`packages/adapters/test/otel.test.ts`, `packages/server/test/otel-world.test.ts`).
+
+다른 앱을 연결할 때는 앱 쪽 환경변수를 아래처럼 둡니다(프로토콜은 JSON).
+
+```bash
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:4318/v1/traces OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+```
+
+설정 파일에서는 `{ "adapter": { "type": "otel", "port": 4318 } }` 로 씁니다.
+
 ### AI 에이전트 세계 (기획안 시나리오 C)
 
 [`examples/adapters/claude-code.ts`](examples/adapters/claude-code.ts) 는 SDK 로 만든 예제로, Claude Code 세션 기록(JSONL)을 마을로 엽니다.
@@ -407,7 +437,7 @@ npm run bench:lab
 npm run study:selftest
 ```
 
-- `npm test`: 단위·통합 테스트 76개입니다. 실제 시스템 테스트 3개는 환경변수로 켭니다(아래).
+- `npm test`: 단위·통합 테스트 83개입니다. 실제 시스템 테스트 3개는 환경변수로 켭니다(아래).
 - `npm run bench:compile`: 컴파일러 KPI 를 잽니다.
 - `npm run e2e`: 실제 브라우저로 데모 시나리오를 처음부터 끝까지 수행합니다.
 - `npm run bench:latency`: 상태 변화가 세계에 반영되기까지의 지연을 폴링/푸시 두 방식으로 잽니다.
@@ -430,7 +460,7 @@ ISOMORPH_TEST_PG_URL=postgres://postgres@127.0.0.1:5432/postgres ISOMORPH_TEST_D
 | 정직성(단사성 위반) | 0건 | 벤치마크 전 문법 단사성 100%. 색이 겹치는 문법은 검증기가 거부함(테스트로 확인) | 달성 |
 | 상태 → 화면 반영 지연 | 500ms 미만 | 푸시 관측: 중앙값 **14ms**, p95 **66ms** (폴링만 쓸 때는 중앙값 368ms · p95 506ms) | 달성 |
 | 엔티티 1만 개 60fps | 60fps | GPU 없는 이 환경(SwiftShader 소프트웨어 렌더링)에서 1만 개 전체 보기(구역 요약) **57~60fps**. 건물이 보이게 확대하면 개체 수와 무관하게 소프트웨어 래스터화가 병목(500개도 21fps, 1만 개 11fps). 이때 프레임당 CPU 는 약 5ms | 전체 보기 달성, 확대 상태는 실제 GPU 측정 필요 |
-| 실제 시스템 동작 | — | 실제 **PostgreSQL 16**(bigint·numeric·date·jsonb·uuid·enum, CHECK, 조건부 쓰기, LISTEN/NOTIFY)과 실제 **Docker 데몬**(컨테이너 관측, 렌즈를 통한 정지·재시작)에서 통합 테스트 통과 | 확인 |
+| 실제 시스템 동작 | — | 실제 **PostgreSQL 16**(bigint·numeric·date·jsonb·uuid·enum, CHECK, 조건부 쓰기, LISTEN/NOTIFY), 실제 **Docker 데몬**(컨테이너 관측, 렌즈를 통한 정지·재시작), 진짜 **OpenTelemetry SDK** 의 OTLP 트레이스(서비스 간 문맥 전파 포함)에서 통합 테스트 통과 | 확인 |
 | 가설 예측 정확도 | — (구현 후 추가) | 데모 쇼핑몰 가설 6종에서 모델 예측과 진짜 코드 결과의 확률 차이 평균 **0.10**, 최대 **0.33**(주문 3배 가설). 질적 결론(깨진다/안 깨진다)은 6종 모두 일치. 위 '가설 실험실' 표 참고 | 데모에서 확인, 실제 서비스 미측정 |
 | 비개발자 이상 탐지 실험 | 대시보드 대비 50% 단축 | 실험 도구 완성(`npm run study`, CI 자가 시험 통과). **참가자 실험은 아직 하지 않음** | 미측정 |
 
@@ -456,20 +486,21 @@ E2E 가 확인하는 것: 세계가 열림 → 반짝 세일 경쟁 조건이 �
 - **은유의 구체성**: 처음 보는 스키마에서는 종류의 약 30%가 '건물'·'주민' 같은 일반 은유로 남습니다. 필드·구조로 고른 은유는 이름 은유보다 덜 생생합니다. 렌즈 법칙상 정확하지만, 알아보기 쉬운 그림은 아직 아닙니다.
 - **행 제한**: 큰 테이블은 최신 `rowLimit` 행만 봅니다. 창 밖 참조 확인(`lookup`)은 PostgreSQL 어댑터에만 있습니다. HTTP·사용자 어댑터는 `lookup` 을 구현해야 같은 오판을 피할 수 있습니다. 시맨틱 줌은 렌더링 부담을 줄일 뿐, 관측량 자체를 줄이지는 않습니다.
 - **원인 시각의 정밀도**: 원인 추적의 시각은 관측 시각(푸시 관측이면 변경 직후)과 행의 `created_at`/`updated_at` 에 기댑니다.
-- **세계 테마**: 지금은 '픽셀 마을' 하나입니다. 항구 도시(K8s) 같은 문법 계열과 OpenTelemetry 트레이스 어댑터가 다음 단계입니다.
+- **세계 테마**: 지금은 '픽셀 마을' 하나입니다. 항구 도시(K8s) 같은 문법 계열이 다음 단계입니다.
+- **OpenTelemetry**: JSON 인코딩의 트레이스만 받습니다(protobuf·지표·로그는 아직). 서비스 사이 관계는 부모 스팬으로만 찾습니다. 부모가 아직 도착하지 않은 스팬이나 계측되지 않은 외부 호출은 '부른 쪽'이 비어 보입니다.
 
 ## 프로젝트 구조
 
 ```
 packages/core       세계 문법·렌즈·검증기·불변식·원인 추적·규칙 학습·가설 시뮬레이터·프로토콜 (브라우저/Node 공용)
 packages/compiler   Metaphor Compiler (규칙 기반 + Claude API) · 벤치마크 스키마
-packages/adapters   Postgres · HTTP/JSON · Docker · 어댑터 SDK(defineAdapter)
+packages/adapters   Postgres · HTTP/JSON · Docker · OpenTelemetry(OTLP) · 어댑터 SDK(defineAdapter)
 packages/server     런타임 · 이벤트 저장소 · WebSocket 서버 · CLI · 사용자 실험 서버·분석
 packages/client     PixiJS 렌더러 · 한국어 UI · 실험 화면(study.html)
 packages/assets     PixelLab 에셋 파이프라인
 apps/demo-shop      경쟁 조건 버그가 있는 데모 쇼핑몰 · 복제 DB 샌드박스
-examples/           연결 설정 예시 · 예제 어댑터(Claude Code 세션) · 합성 세션 기록기
-scripts/            demo · demo-agent · e2e · bench-(compile|latency|lab|real-schemas|heldout-schemas) · study(·analyze·selftest·power)
+examples/           연결 설정 예시 · 예제 어댑터(Claude Code 세션) · 합성 세션 기록기 · OTel 계측 예제 서비스
+scripts/            demo · demo-agent · demo-otel · e2e · bench-(compile|latency|lab|real-schemas|heldout-schemas) · study(·analyze·selftest·power)
 docs/study/         사용자 실험 진행자 문서(계획서·사전 등록·모집·동의서·점검표)
 ```
 

@@ -163,7 +163,8 @@ function planKind(c: CollectionSchema, role: Role, schema: SystemSchema, roles: 
     fields.find((f) => !f.sensitive && f.type === 'string' && /(^|_)(name|title)$/i.test(f.name));
   // 색깔(tint)은 '상태'를 뜻하는 범주형 필드가 우선 차지한다(값이 하나뿐인 필드는 구분할 것이 없어 제외)
   const enumish = fields.filter((f) => f.type === 'string' && !f.ref && !f.sensitive && (f.enumValues?.length ?? 0) > 1);
-  const tintField = (enumish.find((f) => ENUM_RE.test(f.name)) ?? enumish.find((f) => f.enumValues!.length <= 8))?.name;
+  // 상태(status·state·phase…)가 종류(kind·type)보다 먼저: 색은 '지금 어떤 상태인가' 를 보여줄 때 가장 쓸모 있다
+  const tintField = (enumish.find((f) => /(^|_)(status|state|phase|stage|health|condition)$/i.test(f.name)) ?? enumish.find((f) => ENUM_RE.test(f.name)) ?? enumish.find((f) => f.enumValues!.length <= 8))?.name;
   // 1) 참조 필드: NPC는 경로, 건물은 숨김
   const refs = fields.filter((f) => f.ref);
   if (role === 'npc') {

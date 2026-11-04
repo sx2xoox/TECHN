@@ -113,8 +113,10 @@ const COLOR_FAMILIES: [RegExp, ColorName[]][] = [
   [/^(platinum|diamond|enterprise)$/i, ['teal', 'blue']],
   [/^(ok|active|paid|success|succeeded|running|completed?|done|delivered|open|online|healthy|approved|available|published|resolved|up|ready|returned|enrolled|discharged|stable|low)$/i, ['green', 'teal']],
   [/^(pending|waiting|queued|created|processing|in_progress|new|draft|scheduled|starting|review|shipped|in_transit|borrowed|medium|moderate)$/i, ['yellow', 'orange']],
-  [/^(failed|failure|error|rejected|dead|exited|crashed|down|offline|unhealthy|blocked|banned|overdue|expired|critical|high|lost)$/i, ['red', 'pink']],
-  [/^(cancelled|canceled|refunded|restarting|degraded|warning|stopped|paused|suspended|archived|revoked)$/i, ['gray', 'brown']],
+  [/^(failed|failing|failure|error|rejected|dead|exited|crashed|down|offline|unhealthy|blocked|banned|overdue|expired|critical|high|lost)$/i, ['red', 'pink']],
+  // 주의(아직 실패는 아님): 노랑·주황 계열
+  [/^(degraded|warning|warn|unstable|slow|at_risk)$/i, ['orange', 'yellow']],
+  [/^(cancelled|canceled|refunded|restarting|stopped|paused|suspended|archived|revoked|unset|unknown)$/i, ['gray', 'brown']],
 ];
 const NEUTRAL: ColorName[] = ['blue', 'purple', 'teal', 'pink', 'brown', 'orange', 'green', 'yellow', 'red', 'gray'];
 

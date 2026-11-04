@@ -20,6 +20,7 @@
     "bench:latency": "tsx scripts/bench-latency.ts",
     "stress": "echo \"브라우저에서 http://127.0.0.1:4000/?stress=10000 (npm run demo 실행 중)\"",
     "demo:agent": "tsx scripts/demo-agent.ts",
+    "demo:otel": "tsx scripts/demo-otel.ts",
     "bench:lab": "tsx scripts/bench-lab.ts",
     "bench:real": "tsx scripts/bench-real-schemas.ts",
     "bench:heldout": "tsx scripts/bench-heldout-schemas.ts",
@@ -32,6 +33,12 @@
     "node": ">=22.13"
   },
   "devDependencies": {
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/core": "^2.12.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.223.0",
+    "@opentelemetry/resources": "^2.12.0",
+    "@opentelemetry/sdk-trace-base": "^2.12.0",
+    "@opentelemetry/sdk-trace-node": "^2.12.0",
     "@types/node": "^22.10.0",
     "tsx": "^4.20.0",
     "typescript": "~5.9.3",
