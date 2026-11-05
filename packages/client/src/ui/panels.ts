@@ -151,6 +151,8 @@ export interface InspectorHandlers {
   onClose(): void;
   /** 연결된 곳을 눌러 그쪽을 살펴본다 */
   onSelect(entityId: string): void;
+  /** 이 개체(과거 시점이면 그 시점)로 바로 오는 링크를 복사 */
+  onCopyLink(entityId: string): void;
   onAffordance(entityId: string, affordanceId: string): void;
   onInvariant(id: string, status: 'confirmed' | 'dismissed'): void;
 }
@@ -196,6 +198,7 @@ export class Inspector {
     return h('div', { class: 'panel-head' },
       h('img', { src: spriteDataUrl(e.sprite, e.archetype), class: 'pix', width: e.archetype === 'npc' ? 24 : 32 }),
       h('div', { class: 'grow' }, h('h2', null, e.label), h('div', { class: 'muted small' }, `${kindTitle} · ${e.source.collection} #${e.source.pk}`)),
+      h('button', { class: 'btn small ghost copy-link', title: '이 개체로 바로 오는 링크(과거 시점이면 그 시점) 복사', onclick: () => this.hnd.onCopyLink(e.id) }, '링크'),
       h('button', { class: 'x', onclick: () => this.hnd.onClose() }, '✕'),
     );
   }

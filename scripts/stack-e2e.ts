@@ -1,9 +1,10 @@
 import fs from 'node:fs';
+import http from 'node:http';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CompositeAdapter, KubernetesAdapter, OtelAdapter } from '@isomorph/adapters';
-import { IsomorphRuntime, serve } from '@isomorph/server';
+import { attachNotifier, IsomorphRuntime, serve, type NotifyItem } from '@isomorph/server';
 import { startFakeKube } from '../packages/adapters/test/fake-kube.ts';
 import { startTwoServices } from '../examples/otel/two-services.ts';
 
@@ -44,8 +45,20 @@ const rt = new IsomorphRuntime({
   numRuns: 40,
   compile: { mode: 'heuristic' },
 });
-await rt.start();
 const srv = await serve(rt, { port: Number(arg('port') ?? 0), staticDir: path.join(root, 'packages/client/dist') });
+// 알림을 받는 쪽(Slack 대신 작은 웹훅)
+const alerts: NotifyItem[] = [];
+const hook = http.createServer((req, res) => {
+  let b = '';
+  req.on('data', (c) => (b += c));
+  req.on('end', () => {
+    alerts.push(...(JSON.parse(b) as { items: NotifyItem[] }).items);
+    res.writeHead(204).end();
+  });
+});
+await new Promise<void>((r) => hook.listen(0, '127.0.0.1', () => r()));
+const notifier = attachNotifier(rt, { webhook: `http://127.0.0.1:${(hook.address() as { port: number }).port}/hook`, publicUrl: srv.url, batchMs: 200 });
+await rt.start();
 console.log(`세계: ${srv.url}`);
 const browser = await require('playwright').chromium.launch();
 try {
@@ -96,11 +109,33 @@ try {
   assert(true, "연결된 곳을 누르면 상대 시스템의 개체로 건너감");
   const dep = rt.inspect('k8s_deployments:shop/payments').diagnosis;
   assert(dep?.pattern !== 'linked', '반대 방향(나중에 실패한 서비스)은 원인으로 삼지 않음');
+
+  // 알림: 서비스가 실패하자 웹훅으로 진단과 링크가 왔다 → 링크를 열면 그 개체·그 시점
+  await notifier.flush();
+  const alert = alerts.find((a) => a.phase === 'start' && a.entityId === 'otel_services:payments');
+  assert(alert?.link && alert.diagnosis?.pattern === 'linked', `알림이 진단(다른 시스템 원인)과 링크를 싣고 옴 (${alerts.length}건)`);
+  const page2 = await browser.newPage({ viewport: { width: 1440, height: 860 }, deviceScaleFactor: shotsDir ? 2 : 1 });
+  page2.on('pageerror', (e: Error) => errors.push(e.message));
+  await page2.goto(alert.link);
+  await page2.waitForFunction(`window.__iso?.state?.selected === 'otel_services:payments'`, null, { timeout: 30_000 });
+  await page2.waitForSelector('#history-banner:not(.hidden)', { timeout: 10_000 });
+  await page2.waitForSelector('#inspector:not(.hidden) .diagnosis', { timeout: 10_000 });
+  assert(((await page2.locator('#inspector .diagnosis').textContent()) ?? '').includes('다른 시스템'), '알림 링크를 열면 위반이 시작된 시점으로 되감기고 그 개체의 진단이 열림');
+  assert((await page2.evaluate('window.__iso.state.seekTs')) === alert.at, '되감은 시점 = 위반이 시작된 시각');
+  await page2.waitForTimeout(800);
+  if (shotsDir) await page2.screenshot({ path: path.join(shotsDir, '25-alert-link.png') });
+  // '링크' 버튼은 지금 보고 있는 개체·시점으로 오는 같은 링크를 만든다
+  await page2.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page2.locator('#inspector .copy-link').click();
+  const copied = String(await page2.evaluate('navigator.clipboard.readText()'));
+  assert(copied.includes('focus=otel_services%3Apayments') && copied.includes(`at=${alert.at}`), "'링크' 버튼이 같은 개체·시점의 링크를 복사");
   assert(errors.length === 0, `브라우저 오류 없음${errors.length ? `: ${errors.join(' | ')}` : ''}`);
   console.log('\n한 세계 시험 통과 ✅');
   if (keep) await new Promise(() => {});
 } finally {
   clearInterval(traffic);
+  await notifier.stop();
+  hook.close();
   await browser.close();
   await healthy.close();
   await failing?.close();

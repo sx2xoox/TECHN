@@ -19,6 +19,13 @@ export interface IsomorphConfig {
   token?: string;
   /** 관람자 토큰(없으면 ISOMORPH_VIEWER_TOKEN) */
   viewerToken?: string;
+  /** 사람들이 세계를 여는 주소(알림 링크의 앞부분). 없으면 ISOMORPH_PUBLIC_URL, 그것도 없으면 로컬 주소일 때만 그 주소 */
+  publicUrl?: string;
+  /**
+   * 법칙이 깨지면 웹훅으로 알린다. 웹훅 주소는 비밀이므로 파일보다 ISOMORPH_NOTIFY_URL 환경변수를 권한다.
+   * format: auto(주소로 판단) · slack · discord · json
+   */
+  notify?: { webhook?: string; format?: 'auto' | 'slack' | 'discord' | 'json'; minSeverity?: 'info' | 'warning' | 'critical'; batchMs?: number; cooldownMs?: number; resolved?: boolean };
 }
 
 export function loadConfig(file: string): IsomorphConfig {

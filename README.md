@@ -318,6 +318,8 @@ docker build -t isomorph .
 docker run --rm -p 4000:4000 -e ISOMORPH_TOKEN=<운영자 토큰> isomorph connect postgres://user:pass@db:5432/app --host 0.0.0.0
 ```
 
+알림을 켜려면 `-e ISOMORPH_NOTIFY_URL=<웹훅> -e ISOMORPH_PUBLIC_URL=<사람들이 여는 주소>` 를 더합니다(아래 '알림').
+
 인자 없이 실행하면 OpenTelemetry 수신기(4318)로 열립니다. 이때는 수신 토큰도 필요합니다(`-e ISOMORPH_OTLP_TOKEN=<수신 토큰>`). 사용자 실험은 `isomorph study` 로 엽니다. CI 는 이미지를 실제로 빌드한 뒤 아래를 확인합니다.
 
 - 운영자 토큰이나 수신 토큰 없이 바깥 주소로 열면 시작을 거부하는지.
@@ -372,6 +374,37 @@ npx tsx packages/server/src/cli.ts uninstall-feed --config isomorph.config.json
 - **가설 실험실의 시뮬레이션**은 제한 안에서만 돕니다. 같은 배수를 여러 번 걸어도 곱이 20배를 넘지 않고, 한 번 실행에 사건 5만 개까지입니다. 접속마다 하나, 서버 전체로 둘까지 동시에 돌 수 있습니다.
 - **OpenTelemetry 수신기**를 바깥 주소로 열 때는 수신 토큰(`ISOMORPH_OTLP_TOKEN`)이 필요합니다. 이 토큰은 운영자 토큰과 다른 값으로, 보내는 앱은 `OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer <토큰>` 으로 보냅니다. `application/json` 이 아닌 요청은 다른 사이트에서 보낸 위장 요청일 수 있어 받지 않습니다.
 - 독립 보안 검토에서 나온 문제(높음 3·중간 2·낮음 6)는 모두 고쳤고, 각각 회귀 시험이 있습니다(`packages/server/test/security.test.ts`).
+
+### 알림 — 법칙이 깨지면 메신저로, 링크는 그 자리로
+
+![알림의 링크를 열면 — 위반이 시작된 시점으로 되감긴 세계, 그 개체의 진단](docs/screenshots/25-alert-link.png)
+
+세계는 누가 보고 있을 때만 쓸모가 있습니다. 그래서 법칙이 새로 깨지면 Slack·Discord·웹훅으로 알립니다. 알림에는 원인 진단과 링크가 함께 실립니다.
+
+```bash
+ISOMORPH_NOTIFY_URL=https://hooks.slack.com/services/… npm run isomorph -- connect postgres://user:pass@localhost:5432/app --public-url https://isomorph.example.com
+```
+
+- 알림 예: "🔴 재고는 음수가 될 수 없다 — products #3 · 원인 후보: 동시성 경쟁 조건(race condition) 의심 — … · 세계에서 보기"
+- **링크를 열면** 그 위반이 시작된 시각으로 되감긴 세계가 열립니다. 그 개체가 골라져 있고, 살펴보기와 원인 진단이 펼쳐져 있습니다.
+  - 링크 모양은 `…/?focus=<개체>&at=<시각>` 입니다.
+  - 살펴보기 창의 **링크** 버튼으로 지금 보는 개체·시점의 같은 링크를 복사해 동료에게 줄 수 있습니다.
+  - 토큰이 필요한 세계면 링크를 연 사람이 토큰으로 들어와야 합니다. 링크에는 토큰을 넣지 않습니다.
+- **소음 줄이기**:
+  - 몇 초 안에 생긴 위반은 메시지 하나로 묶습니다.
+  - 같은 위반이 10분 안에 다시 깨지면(깜빡임) 다시 알리지 않습니다.
+  - ISOMORPH 를 다시 시작할 때 이미 깨져 있던 것은 알리지 않습니다. 대신 그것이 풀리면 '복구'는 알립니다.
+  - 기본은 warning 이상만 알립니다. 아직 확정하지 않은 '추정' 법칙은 critical 일 때만 알립니다.
+- **형식**: 주소로 알아봅니다. Slack(`hooks.slack.com`), Discord(`discord.com/api/webhooks`), 그 밖은 JSON(`text` 와 항목 배열)입니다.
+- **안전**:
+  - 민감 값은 세계와 같은 규칙으로 가려져 실립니다.
+  - 데이터에서 온 글자가 Slack 의 `@channel` 멘션이나 링크 문법이 되지 않게 막고, Discord 멘션은 끕니다.
+  - 웹훅 주소는 비밀(토큰 포함)이라 실패 로그에도 남기지 않습니다.
+  - 알림이 실패해도 세계는 멈추지 않습니다.
+- **설정 파일**: `"notify": { "format": "auto", "minSeverity": "warning", "cooldownMs": 600000 }` 와 `"publicUrl"` 을 씁니다. 웹훅 주소는 파일보다 `ISOMORPH_NOTIFY_URL` 환경변수를 권합니다. `publicUrl` 이 없으면 로컬 주소일 때만 링크를 싣습니다.
+- **확인**:
+  - `packages/server/test/notify.test.ts`: 형식, 묶음, 시작 시 침묵, 복구, 깜빡임 억제, 실패 내성, 비밀 주소 숨김을 시험합니다.
+  - 브라우저 E2E(`npm run e2e:stack`): 실패한 서비스의 알림이 '다른 시스템 원인' 진단을 싣고 오는지 확인합니다. 그 링크를 열면 위반이 시작된 시각의 세계에서 그 개체의 진단이 열리는 것까지 봅니다.
 
 ### 공유본 — 서버 없이 여는 HTML 한 파일
 
@@ -636,9 +669,9 @@ npm run bench:lab
 npm run study:selftest
 ```
 
-- `npm test`: 단위·통합 테스트 134개입니다. 실제 시스템 테스트 9개(PostgreSQL·Docker 3개, Kubernetes 4개, 클러스터+서비스 한 세계 2개)는 환경변수로 켭니다(아래).
+- `npm test`: 단위·통합 테스트 138개입니다. 실제 시스템 테스트 9개(PostgreSQL·Docker 3개, Kubernetes 4개, 클러스터+서비스 한 세계 2개)는 환경변수로 켭니다(아래).
 - `npm run e2e:snapshot`: 공유본을 내려받아 네트워크를 막은 브라우저로 엽니다.
-- `npm run e2e:stack`: 클러스터와 서비스를 한 세계로 열고, 다른 시스템에 있는 원인을 브라우저에서 찾아갑니다.
+- `npm run e2e:stack`: 클러스터와 서비스를 한 세계로 열고, 다른 시스템에 있는 원인을 브라우저에서 찾아갑니다. 알림의 링크로 그 시점·그 개체가 열리는지도 봅니다.
 - `npm run bench:compile`: 컴파일러 KPI 를 잽니다.
 - `npm run e2e`: 실제 브라우저로 데모 시나리오를 처음부터 끝까지 수행합니다.
 - `npm run bench:latency`: 상태 변화가 세계에 반영되기까지의 지연을 폴링/푸시 두 방식으로 잽니다.
@@ -706,6 +739,7 @@ E2E 가 확인하는 것: 세계가 열림 → 반짝 세일 경쟁 조건이 �
 - **원인 시각의 정밀도**: 원인 추적의 시각은 관측 시각(푸시 관측이면 변경 직후)과 행의 `created_at`/`updated_at` 에 기댑니다.
 - **세계 테마**: 지금은 '픽셀 마을' 하나입니다. Kubernetes 도 마을 문법으로 그립니다(서버탑·관리소·공장). 항구 도시 같은 다른 문법 계열은 아직입니다.
 - **여러 시스템 한 세계**: 자동 연결은 어댑터가 표시한 이름 체계(지금은 OpenTelemetry 서비스 ↔ Kubernetes 디플로이먼트)만 봅니다. 데이터베이스 행과 서비스 사이처럼 표시가 없는 연결은 설정으로 이어야 합니다. 원인 진단은 '연결된 곳이 먼저 법칙을 어겼다'는 시간 순서만 봅니다. 두 시스템의 관측 시각이 어긋나면 틀릴 수 있고, 한 단계 너머(연결의 연결)는 따라가지 않습니다.
+- **알림**: 웹훅 하나로 보냅니다. 채널별 경로 나누기, Microsoft Teams·이메일 형식, 메시지 안의 버튼(승인·되돌리기)은 아직 없습니다. 묶음·억제 상태는 메모리에만 있어서, 다시 시작하면 억제 시계도 처음부터 셉니다.
 - **Kubernetes**: 노드·디플로이먼트·파드·이벤트만 봅니다(StatefulSet·DaemonSet·Job·Service·Ingress 는 아직). 쓰기는 복제본 수 하나입니다. 이벤트는 최근 200개만 봅니다. 큰 클러스터에서 목록 전체를 다시 읽는 비용은 재지 않았습니다.
 - **색각 접근성**: 미리보기는 근사입니다. 모양은 아주 멀리서 보면(구역 요약) 보이지 않습니다. 색각 이상이 있는 사람과의 확인은 아직 하지 않았습니다.
 - **OpenTelemetry**: OTLP/HTTP 의 트레이스만 받습니다(gRPC·지표·로그는 아직). 서비스 사이 관계는 부모 스팬으로만 찾습니다. 부모가 아직 도착하지 않은 스팬이나 계측되지 않은 외부 호출은 '부른 쪽'이 비어 보입니다.

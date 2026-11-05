@@ -24,6 +24,10 @@ const state = {
 
 const params = new URLSearchParams(location.search);
 const stressN = Number(params.get('stress') ?? 0);
+/** 알림 링크(?focus=개체&at=시각): 그 시점으로 되감고 그 개체를 연다 */
+let deepLink: { id: string; at: number | null; seeking: boolean } | null = params.get('focus')
+  ? { id: params.get('focus')!, at: Number(params.get('at')) || null, seeking: false }
+  : null;
 
 async function main() {
   await loadFonts();
@@ -58,6 +62,17 @@ async function main() {
     onSelect: (id) => {
       select(id);
       town.focus(id);
+    },
+    onCopyLink: (id) => {
+      const u = new URL(location.href);
+      u.search = '';
+      u.hash = '';
+      u.searchParams.set('focus', id);
+      if (state.mode === 'history' && state.seekTs) u.searchParams.set('at', String(state.seekTs));
+      const link = u.toString();
+      const done = () => toasts.show('success', '이 개체로 오는 링크를 복사했습니다');
+      if (navigator.clipboard?.writeText) navigator.clipboard.writeText(link).then(done, () => window.prompt('링크', link));
+      else window.prompt('링크', link);
     },
     onAffordance: (entityId, affordanceId) => send({ type: 'dryrun', entityId, affordanceId }),
     onInvariant: (id, status) => send({ type: 'invariant', id, status }),
@@ -194,6 +209,24 @@ async function main() {
     }
     if (state.selected && mode === 'live' && Math.random() < 0.34) send({ type: 'inspect', entityId: state.selected });
     if (state.selected && mode === 'history') send({ type: 'inspect', entityId: state.selected });
+    openDeepLink(w, mode);
+  }
+
+  /** 알림 링크로 왔으면: 그 시점으로 되감은 뒤 그 개체를 고르고 화면 가운데로 */
+  function openDeepLink(w: WorldState, mode: 'live' | 'history') {
+    if (!deepLink) return;
+    if (deepLink.at && !deepLink.seeking) {
+      deepLink.seeking = true;
+      send({ type: 'seek', ts: deepLink.at });
+      return;
+    }
+    if (deepLink.at && mode !== 'history') return; // 되감은 세계를 기다린다
+    const { id } = deepLink;
+    deepLink = null;
+    if (w.entities.some((e) => e.id === id)) {
+      town.focus(id);
+      select(id);
+    } else toasts.show('warning', '링크의 개체가 이 시점의 세계에 없습니다');
   }
 
   function onInspect(m: InspectMessage) {

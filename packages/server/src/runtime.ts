@@ -41,6 +41,7 @@ import {
   type TimelineMessage,
   type UpdateCommand,
   type VerificationReport,
+  type Violation,
   type WorldEntity,
   type WorldGrammar,
   type WorldState,
@@ -94,6 +95,17 @@ interface PendingVerification {
 
 export type RuntimeStatus = 'starting' | 'running' | 'refused' | 'error' | 'stopped';
 
+/** 법칙 위반이 새로 시작되거나(start) 풀렸을 때(end) 내는 사건. 알림이 이것을 듣는다 */
+export interface ViolationEvent {
+  phase: 'start' | 'end';
+  ts: number;
+  violation: Violation;
+  /** 세계에 그려진 개체(없으면 null: 행 제한 밖 등) */
+  entityId: string | null;
+  /** 시작한 뒤 첫 관측에서 이미 깨져 있던 것(새로 깨진 것이 아님) */
+  initial: boolean;
+}
+
 /**
  * ISOMORPH 런타임: 어댑터 ↔ 렌즈 ↔ 세계.
  * 네트워크와 무관한 순수 로직이라 단독으로 테스트할 수 있다(WebSocket 서버는 이것을 감쌀 뿐).
@@ -118,7 +130,8 @@ export class IsomorphRuntime extends EventEmitter {
   private actions: ActionRecord[] = [];
   private pending: PendingVerification[] = [];
   private markers: TimelineMarker[] = [];
-  private activeViolations = new Set<string>();
+  private activeViolations = new Map<string, Violation>();
+  private trackedOnce = false;
   private log: (msg: string) => void;
   readonly writeMode: WriteMode;
   readonly pollMs: number;
@@ -311,18 +324,25 @@ export class IsomorphRuntime extends EventEmitter {
   }
 
   private trackMarkers(world: WorldState) {
-    const now = new Set<string>();
+    const now = new Map<string, Violation>();
     for (const v of world.violations) {
       const key = `${v.invariantId}:${String(v.pk)}`;
-      now.add(key);
+      now.set(key, v);
       if (!this.activeViolations.has(key)) {
         const ids = world.entities.filter((e) => e.source.collection === v.collection && String(e.source.pk) === String(v.pk)).map((e) => e.id);
         this.markers.push({ ts: world.ts, invariantId: v.invariantId, title: v.title, entityIds: ids });
         if (this.markers.length > 300) this.markers.shift();
         if (!v.proposed || v.severity === 'critical') this.emit('toast', { level: 'warning', message: `법칙 위반: ${v.title} (${v.collection} #${v.pk})` });
+        this.emit('violation', { phase: 'start', ts: world.ts, violation: v, entityId: ids[0] ?? null, initial: !this.trackedOnce } satisfies ViolationEvent);
       }
     }
+    for (const [key, v] of this.activeViolations) {
+      if (now.has(key)) continue;
+      const ids = world.entities.filter((e) => e.source.collection === v.collection && String(e.source.pk) === String(v.pk)).map((e) => e.id);
+      this.emit('violation', { phase: 'end', ts: world.ts, violation: v, entityId: ids[0] ?? null, initial: false } satisfies ViolationEvent);
+    }
     this.activeViolations = now;
+    this.trackedOnce = true;
   }
 
   /** 실제 시스템에서 PutGet 확인: 실행한 편집이 다음 관측에 그대로 보이는가 */

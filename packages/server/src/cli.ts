@@ -5,6 +5,8 @@ import { attachStats, formatReport, verifyGrammar } from '@isomorph/core';
 import { anthropicDraftModel, compile } from '@isomorph/compiler';
 import { CompositeAdapter, loadAdapter, OtelAdapter, PostgresAdapter } from '@isomorph/adapters';
 import { configFromTarget, loadAssets, loadConfig, loadGrammar } from './config.ts';
+import { isLoopback } from './auth.ts';
+import { attachNotifier } from './notify.ts';
 import { IsomorphRuntime } from './runtime.ts';
 import { serve } from './server.ts';
 
@@ -12,6 +14,7 @@ import { serve } from './server.ts';
  * isomorph connect <postgres://…|https://…|otel|docker|kubernetes> [--schema s] [--port 4000] [--write low]   설정 파일 없이 바로(읽기 전용)
  *   kubernetes: [--context c] [--kubeconfig f] [--namespace n]
  *   대상을 여러 개(종류가 달라도) 주면 한 세계로 묶는다: connect postgres://… otel kubernetes
+ *   알림: --notify <웹훅>(또는 ISOMORPH_NOTIFY_URL) [--public-url https://…]
  * isomorph study   사용자 실험 서버(STUDY_* 환경변수, scripts/study.ts 와 같음)
  * isomorph snapshot <대상|--config x.json> [--observe 20] [--minutes 10] [--out world.html]   공유본(HTML 한 파일) 만들기
  * isomorph serve   --config isomorph.config.json   세계를 연다
@@ -134,6 +137,14 @@ async function main() {
     viewerToken: config.viewerToken ?? process.env.ISOMORPH_VIEWER_TOKEN,
     log,
   });
+  // 알림: 법칙이 새로 깨지면 웹훅으로(링크는 그 개체·그 시점의 세계)
+  const webhook = flag('notify') ?? config.notify?.webhook ?? process.env.ISOMORPH_NOTIFY_URL;
+  if (webhook) {
+    const publicUrl = flag('public-url') ?? config.publicUrl ?? process.env.ISOMORPH_PUBLIC_URL ?? (isLoopback(config.host) ? srv.url : null);
+    const n = attachNotifier(runtime, { ...config.notify, webhook, publicUrl, log });
+    log(`알림 켜짐(${n.format})${publicUrl ? ` · 링크 ${publicUrl}` : ' · 링크 없음(바깥 주소면 --public-url 로 알려 주세요)'}`);
+    process.once('SIGTERM', () => void n.stop());
+  }
   // 시스템이 아직 안 떴으면 기다렸다가 다시 시도한다
   let status = await runtime.start();
   for (let i = 0; status === 'error' && i < 60; i++) {
