@@ -107,10 +107,16 @@ button.chip { cursor: pointer; }
 .badge.cross { background: #23406b; color: #cfe3ff; border-color: #4a7bc0; margin-left: 4px; }
 .causes .badge { margin-left: 4px; }
 .related { list-style: none; padding: 0; margin: 0; }
+.chain ol { list-style: none; padding: 0; margin: 0; border-left: 3px solid #e61919; padding-left: 8px; }
+.chain li { padding: 4px 0; font-size: 12px; line-height: 1.45; }
+.chain li.here { color: var(--muted); }
+.chain .via { color: #ffb3a8; font-size: 11px; }
+.chain li.root { background: rgba(230, 25, 25, 0.12); padding: 4px 6px; }
+.badge.root { background: #e61919; color: #fff; border-color: #ff8a80; margin-left: 4px; }
 .related li { display: grid; grid-template-columns: 18px 1fr; gap: 4px; padding: 4px 0; border-bottom: 1px solid #3a3343; font-size: 12px; line-height: 1.45; }
 .related li.sick { background: rgba(230, 25, 25, 0.08); }
 .related .dir { color: var(--muted); text-align: center; }
-.related button.link { background: none; border: 0; padding: 0; color: #9cc8ff; font: inherit; cursor: pointer; text-decoration: underline; }
+#inspector button.link { background: none; border: 0; padding: 0; color: #9cc8ff; font: inherit; cursor: pointer; text-decoration: underline; box-shadow: none; min-height: 0; }
 table.fields { width: 100%; border-collapse: collapse; font-size: 11px; }
 table.fields th { text-align: left; color: var(--muted); font-weight: 400; border-bottom: 1px solid var(--line); padding: 3px; }
 table.fields td { padding: 4px 3px; border-bottom: 1px solid #3a3343; vertical-align: top; word-break: break-all; }

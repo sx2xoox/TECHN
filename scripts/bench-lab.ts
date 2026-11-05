@@ -12,7 +12,7 @@ const TRIALS = Number(process.env.TRIALS ?? 8);
 const HORIZON = Number(process.env.HORIZON ?? 20_000);
 const orderEveryMs: [number, number] = [150, 400];
 
-const shop = await startShop({ httpPort: 0, pgPort: 58900 + Math.floor(Math.random() * 90), traffic: { orderEveryMs, firstFlashSaleMs: 3000, flashSaleEveryMs: 9000 } });
+const shop = await startShop({ httpPort: 0, pgPort: 0, traffic: { orderEveryMs, firstFlashSaleMs: 3000, flashSaleEveryMs: 9000 } });
 const rt = new IsomorphRuntime({ adapter: new PostgresAdapter({ connectionString: shop.pgUrl, system: 'demo-shop', changeFeed: 'log', feedMs: 50 }), pollMs: 1000, numRuns: 40, compile: { mode: 'heuristic' } });
 await rt.start();
 setTimeout(() => void shop.db.query('update products set active = false where id = 5'), 8000);

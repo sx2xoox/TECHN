@@ -110,10 +110,25 @@ try {
   const dep = rt.inspect('k8s_deployments:shop/payments').diagnosis;
   assert(dep?.pattern !== 'linked', '반대 방향(나중에 실패한 서비스)은 원인으로 삼지 않음');
 
+  // 근본 원인 사슬: web 을 누르면 web ← payments(오류가 시작된 곳) ← 클러스터의 payments(먼저 법칙을 어김)
+  await page.evaluate(`window.__iso.town.focus('otel_services:web')`);
+  await page.waitForTimeout(300);
+  const wpos = (await page.evaluate(`window.__iso.town.screenOf('otel_services:web')`)) as { x: number; y: number };
+  await page.mouse.click(stage.x + wpos.x, stage.y + wpos.y + 20);
+  await page.waitForFunction(`window.__iso.state.selected === 'otel_services:web'`, null, { timeout: 5000 });
+  await page.waitForSelector('#inspector .chain li.root', { timeout: 10_000 });
+  const chainText = (await page.locator('#inspector .chain').textContent()) ?? '';
+  assert(chainText.includes('오류가 시작된 곳') && chainText.includes('payments') && chainText.includes('먼저 법칙을 어김') && chainText.includes('근본 원인'), '실패한 web 을 누르면 근본 원인 사슬이 클러스터의 payments 디플로이먼트까지 이어짐');
+  assert(((await page.locator('#inspector .chain li.root').textContent()) ?? '').includes('다른 시스템'), '사슬의 끝(근본 원인)은 다른 시스템');
+  await page.waitForTimeout(900);
+  if (shotsDir) await page.screenshot({ path: path.join(shotsDir, '26-root-chain.png') });
+
   // 알림: 서비스가 실패하자 웹훅으로 진단과 링크가 왔다 → 링크를 열면 그 개체·그 시점
   await notifier.flush();
   const alert = alerts.find((a) => a.phase === 'start' && a.entityId === 'otel_services:payments');
   assert(alert?.link && alert.diagnosis?.pattern === 'linked', `알림이 진단(다른 시스템 원인)과 링크를 싣고 옴 (${alerts.length}건)`);
+  const webAlert = alerts.find((a) => a.phase === 'start' && a.entityId === 'otel_services:web');
+  assert(webAlert?.root?.collection === 'k8s_deployments' && webAlert.root.pk === 'shop/payments' && webAlert.root.hops === 2, 'web 의 알림에는 근본 원인(2단계 위, 클러스터의 payments)이 실림');
   const page2 = await browser.newPage({ viewport: { width: 1440, height: 860 }, deviceScaleFactor: shotsDir ? 2 : 1 });
   page2.on('pageerror', (e: Error) => errors.push(e.message));
   await page2.goto(alert.link);

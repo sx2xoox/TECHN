@@ -1,9 +1,9 @@
-import { diagnose, findCauses } from './diagnose.ts';
+import { diagnose, findCauses, type Diagnosis } from './diagnose.ts';
 import type { ChangeEvent } from './diff.ts';
 import { kindById, parseEntityId, type WorldGrammar } from './grammar.ts';
 import { observe } from './invariants.ts';
 import { maskRow } from './legend.ts';
-import { riskAllowed, type AffordanceOption, type InspectField, type InspectMessage, type RelatedEntity, type WriteMode } from './protocol.ts';
+import { riskAllowed, type AffordanceOption, type ChainStep, type InspectField, type InspectMessage, type RelatedEntity, type WriteMode } from './protocol.ts';
 import { findCollection, pkOf, type Snapshot, type SystemSchema } from './schema.ts';
 
 /**
@@ -44,7 +44,9 @@ export function buildInspect(opts: { snapshot: Snapshot; grammar: WorldGrammar; 
   const top = [...violations].sort((a, b) => sevRank[a.severity] - sevRank[b.severity])[0];
   const topInv = top ? grammar.invariants.find((i) => i.id === top.invariantId) : undefined;
   const causes = top ? findCauses(top, opts.events, schema, 20_000, row ?? undefined, topInv, grammar.invariants) : [];
-  const diagnosis = top ? diagnose(top, topInv, causes) : null;
+  const up = top && row ? upstreamOf(snap, grammar, schema, world, opts.events, kind.collection, parsed.pk, row) : null;
+  const diagnosis = !top ? null : up?.via === 'blame' ? blameDiagnosis(up) : diagnose(top, topInv, causes);
+  const chain = top && row ? chainFrom(snap, grammar, schema, world, opts.events, kind.collection, parsed.pk, row) : [];
   const affordances: AffordanceOption[] = grammar.affordances
     .filter((a) => a.entityKind === kind.id)
     .map((a) => {
@@ -53,7 +55,78 @@ export function buildInspect(opts: { snapshot: Snapshot; grammar: WorldGrammar; 
       return { id: a.id, title: a.title, description: a.description, risk: a.risk, allowed, ...(reason ? { reason } : {}) };
     });
   const { related, more } = row ? relatedOf(snap, grammar, schema, world, kind.collection, parsed.pk, row) : { related: [], more: 0 };
-  return { type: 'inspect', entityId, entity, collection: kind.collection, pk: parsed.pk, row: masked, fields, violations, causes, diagnosis, affordances, related, ...(more ? { relatedMore: more } : {}) };
+  return { type: 'inspect', entityId, entity, collection: kind.collection, pk: parsed.pk, row: masked, fields, violations, causes, diagnosis, affordances, related, ...(more ? { relatedMore: more } : {}), ...(chain.length ? { chain } : {}) };
+}
+
+type World = ReturnType<typeof observe>;
+type Up = ChainStep & { row: Record<string, unknown>; field: string };
+
+const sevRankOf = { critical: 0, warning: 1, info: 2 } as const;
+const topViolation = (world: World, collection: string, pk: string) =>
+  world.violations.filter((v) => v.collection === collection && String(v.pk) === pk).sort((a, b) => sevRankOf[a.severity] - sevRankOf[b.severity])[0];
+
+function stepFor(snap: Snapshot, grammar: WorldGrammar, schema: SystemSchema, world: World, collection: string, pk: string, via: ChainStep['via'], crossSystem: boolean, field: string): Up | null {
+  const col = findCollection(schema, collection);
+  if (!col) return null;
+  const row = (snap.collections[collection] ?? []).find((r) => String(pkOf(r, col)) === pk);
+  const v = topViolation(world, collection, pk);
+  if (!row || !v) return null; // 법칙을 어기고 있지 않은 곳은 원인으로 치지 않는다
+  const k = grammar.kinds.find((x) => x.collection === collection && x.archetype !== 'npc') ?? grammar.kinds.find((x) => x.collection === collection);
+  const id = k ? `${k.id}:${pk}` : null;
+  const shown = id ? world.entities.find((e) => e.id === id) : undefined;
+  return { collection, pk, entityId: shown ? id : null, label: shown?.label ?? `${collection} #${pk}`, title: k?.title ?? collection, violation: v.title, via, crossSystem, row, field };
+}
+
+/**
+ * 한 걸음 거슬러 오르기.
+ *  1) '문제가 비롯된 곳' 참조(blame)가 가리키는 곳이 법칙을 어기고 있으면 그곳(시스템이 계산한 인과라 먼저 믿는다)
+ *  2) 아니면 시간 순서: 연결된 곳이 이 위반 직전에 먼저 자기 법칙을 어겼으면 그곳
+ */
+function upstreamOf(snap: Snapshot, grammar: WorldGrammar, schema: SystemSchema, world: World, events: ChangeEvent[], collection: string, pk: string, row: Record<string, unknown>): Up | null {
+  const col = findCollection(schema, collection);
+  if (!col) return null;
+  for (const f of col.fields) {
+    if (!f.ref?.blame || row[f.name] === null || row[f.name] === undefined) continue;
+    const target = findCollection(schema, f.ref.collection);
+    const tr = target && (snap.collections[target.name] ?? []).find((r) => String(r[f.ref!.field]) === String(row[f.name]));
+    if (!target || !tr) continue;
+    const step = stepFor(snap, grammar, schema, world, target.name, String(pkOf(tr, target)), 'blame', !!f.ref.crossSystem, f.name);
+    if (step) return step;
+  }
+  const v = topViolation(world, collection, pk);
+  if (!v) return null;
+  const inv = grammar.invariants.find((i) => i.id === v.invariantId);
+  const causes = findCauses(v, events, schema, 20_000, row, inv, grammar.invariants);
+  const d = diagnose(v, inv, causes);
+  if (d.pattern !== 'linked') return null;
+  const c = causes.filter((x) => x.relation !== 'self' && x.broke).at(-1);
+  return c ? stepFor(snap, grammar, schema, world, c.collection, String(c.pk), 'linked', !!c.crossSystem, '') : null;
+}
+
+function blameDiagnosis(up: Up): Diagnosis {
+  return {
+    pattern: 'linked',
+    title: up.crossSystem ? '오류가 다른 시스템에서 시작됨' : '오류가 다른 곳에서 시작됨',
+    detail: `실패한 요청을 따라 내려가 보면 오류는 ${up.collection} #${up.pk} 에서 시작됐습니다('${up.violation}'). 이 위반은 그 오류가 이어져 온 결과입니다.`,
+    confidence: 'high',
+    suggestion: `먼저 ${up.collection} #${up.pk} 를 살펴보세요.`,
+  };
+}
+
+/** 근본 원인 사슬: 거슬러 오를 곳이 없을 때까지(고리·깊이 제한) */
+function chainFrom(snap: Snapshot, grammar: WorldGrammar, schema: SystemSchema, world: World, events: ChangeEvent[], collection: string, pk: string, row: Record<string, unknown>): ChainStep[] {
+  const seen = new Set([`${collection}:${pk}`]);
+  const out: ChainStep[] = [];
+  let cur = { collection, pk, row };
+  for (let i = 0; i < 6; i++) {
+    const up = upstreamOf(snap, grammar, schema, world, events, cur.collection, cur.pk, cur.row);
+    if (!up || seen.has(`${up.collection}:${up.pk}`)) break;
+    seen.add(`${up.collection}:${up.pk}`);
+    const { row: next, field: _f, ...step } = up;
+    out.push(step);
+    cur = { collection: up.collection, pk: String(up.pk), row: next };
+  }
+  return out;
 }
 
 const RELATED_MAX = 12;

@@ -104,6 +104,22 @@ export interface InspectMessage {
   related?: RelatedEntity[];
   /** related 에 다 싣지 못한 수 */
   relatedMore?: number;
+  /** 근본 원인 사슬: 이 위반에서 거슬러 올라간 곳들(마지막이 근본 원인). 거슬러 갈 곳이 없으면 비어 있다 */
+  chain?: ChainStep[];
+}
+
+export interface ChainStep {
+  collection: string;
+  pk: Pk;
+  entityId: string | null;
+  label: string;
+  /** 종류 이름 */
+  title: string;
+  /** 그곳이 어기고 있는 법칙 */
+  violation: string;
+  /** blame: 그곳에서 오류가 시작됨(트레이스 등 시스템이 계산한 인과), linked: 그곳이 먼저 법칙을 어김(시간 순서) */
+  via: 'blame' | 'linked';
+  crossSystem: boolean;
 }
 
 export interface RelatedEntity {

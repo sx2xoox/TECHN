@@ -33,7 +33,7 @@ describe('isomorph connect', () => {
   });
 
   it('opens a verified world from one command against a real PostgreSQL wire endpoint', async () => {
-    const shop = await startShop({ httpPort: 0, pgPort: 58500 + Math.floor(Math.random() * 300), traffic: { orderEveryMs: [400, 800], firstFlashSaleMs: 0, flashSaleEveryMs: 0 } });
+    const shop = await startShop({ httpPort: 0, pgPort: 0, traffic: { orderEveryMs: [400, 800], firstFlashSaleMs: 0, flashSaleEveryMs: 0 } });
     const child = spawn(process.execPath, ['--import', 'tsx', path.join(root, 'packages/server/src/cli.ts'), 'connect', shop.pgUrl, '--port', '0'], { cwd: root, env: { ...process.env, ANTHROPIC_API_KEY: '' } });
     try {
       const url = await new Promise<string>((resolve, reject) => {

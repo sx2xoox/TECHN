@@ -38,8 +38,7 @@ async function main() {
   const staticDir = path.join(root, 'packages/client/dist');
   if (!fs.existsSync(path.join(staticDir, 'index.html'))) throw new Error('먼저 npm run build');
 
-  const pgPort = 57000 + Math.floor(Math.random() * 900);
-  const shop = await startShop({ httpPort: 0, pgPort, traffic: { firstFlashSaleMs: 3000, flashSaleEveryMs: 0, orderEveryMs: [500, 1200] } });
+  const shop = await startShop({ httpPort: 0, pgPort: 0, traffic: { firstFlashSaleMs: 3000, flashSaleEveryMs: 0, orderEveryMs: [500, 1200] } });
   const runtime = new IsomorphRuntime({ adapter: new PostgresAdapter({ connectionString: shop.pgUrl, system: 'demo-shop', changeFeed: 'log', feedMs: 50 }), writeMode: 'medium', pollMs: 1000, numRuns: 100, compile: { mode: 'heuristic' } });
   assert((await runtime.start()) === 'running', '렌즈 검증 통과 후 세계가 열림');
   const srv = await serve(runtime, { port: 0, staticDir });

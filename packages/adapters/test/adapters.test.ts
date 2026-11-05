@@ -9,10 +9,9 @@ import { startShop, type ShopHandle } from '@isomorph/demo-shop';
 import { ConflictError, DockerAdapter, HttpJsonAdapter, inferCollection, inferRefs, parseCheck, PostgresAdapter } from '../src/index.ts';
 
 let shop: ShopHandle;
-const PG_PORT = 55400 + Math.floor(Math.random() * 500);
 
 beforeAll(async () => {
-  shop = await startShop({ httpPort: 0, pgPort: PG_PORT, traffic: false, shop: { paymentMs: [80, 100], paymentFailureRate: 0 } });
+  shop = await startShop({ httpPort: 0, pgPort: 0, traffic: false, shop: { paymentMs: [80, 100], paymentFailureRate: 0 } });
 });
 afterAll(async () => {
   await shop?.stop();

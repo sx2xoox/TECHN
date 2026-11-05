@@ -39,6 +39,8 @@ export interface NotifyItem {
   values: Violation['values'];
   diagnosis: Pick<Diagnosis, 'pattern' | 'title' | 'detail'> | null;
   link: string | null;
+  /** 근본 원인 사슬의 끝(거슬러 오를 곳이 있을 때만) */
+  root: { collection: string; pk: string; entityId: string | null; label: string; violation: string; crossSystem: boolean; hops: number; link: string | null } | null;
 }
 
 export interface NotifyPayload {
@@ -76,7 +78,8 @@ export function formatText(system: string, items: NotifyItem[], style: 'slack' |
   const lines = [`ISOMORPH · ${t(system)} — ${head}`];
   for (const i of starts) {
     lines.push(`${i.severity === 'critical' ? '🔴' : '🟠'} ${t(i.title)} — ${t(i.collection)} #${t(i.pk)}${link(i.link, '세계에서 보기')}`);
-    if (i.diagnosis && i.diagnosis.pattern !== 'unknown') lines.push(`    원인 후보: ${t(i.diagnosis.title)} — ${t(clip(i.diagnosis.detail, 220))}`);
+    if (i.root) lines.push(`    근본 원인(${i.root.hops}단계 위): ${t(i.root.label)} — ${t(i.root.collection)} #${t(i.root.pk)} · ${t(i.root.violation)}${i.root.crossSystem ? ' [다른 시스템]' : ''}${link(i.root.link, '근본 원인 보기')}`);
+    else if (i.diagnosis && i.diagnosis.pattern !== 'unknown') lines.push(`    원인 후보: ${t(i.diagnosis.title)} — ${t(clip(i.diagnosis.detail, 220))}`);
   }
   for (const i of ends) lines.push(`✅ 복구: ${t(i.title)} — ${t(i.collection)} #${t(i.pk)}${link(i.link, '보기')}`);
   return lines.join('\n');
@@ -133,8 +136,13 @@ export function attachNotifier(rt: IsomorphRuntime, opts: NotifyOptions) {
     const items: NotifyItem[] = batch.map((e) => {
       const v = e.violation;
       if (e.phase === 'start') notified.set(key(v), e.ts);
-      // 진단은 지금 세계에서 계산한다(살펴보기와 같은 결과, 민감 값은 가려짐)
-      const diag = e.phase === 'start' && e.entityId ? rt.inspect(e.entityId).diagnosis : null;
+      // 진단·근본 원인은 지금 세계에서 계산한다(살펴보기와 같은 결과, 민감 값은 가려짐)
+      const ins = e.phase === 'start' && e.entityId ? rt.inspect(e.entityId) : null;
+      const diag = ins?.diagnosis ?? null;
+      const last = ins?.chain?.at(-1);
+      const root = last
+        ? { collection: last.collection, pk: String(last.pk), entityId: last.entityId, label: last.label, violation: last.violation, crossSystem: ins!.chain!.some((s) => s.crossSystem), hops: ins!.chain!.length, link: opts.publicUrl && last.entityId ? deepLink(opts.publicUrl, last.entityId, e.ts) : null }
+        : null;
       return {
         phase: e.phase,
         at: e.ts,
@@ -146,6 +154,7 @@ export function attachNotifier(rt: IsomorphRuntime, opts: NotifyOptions) {
         values: v.values,
         diagnosis: diag ? { pattern: diag.pattern, title: diag.title, detail: diag.detail } : null,
         link: opts.publicUrl ? deepLink(opts.publicUrl, e.entityId, e.phase === 'start' ? e.ts : undefined) : null,
+        root,
       };
     });
     const payload = formatPayload(format, { system: rt.schema?.system ?? 'isomorph', text: '', items });

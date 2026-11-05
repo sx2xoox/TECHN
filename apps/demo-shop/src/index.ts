@@ -53,7 +53,18 @@ async function readBody(req: http.IncomingMessage): Promise<Record<string, unkno
   return text ? JSON.parse(text) : {};
 }
 
-/** 쇼핑몰 = HTTP API(:4100) + PostgreSQL 와이어 프로토콜(:5433) + 손님 트래픽 */
+function freePort(host: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const s = http.createServer();
+    s.once('error', reject);
+    s.listen(0, host, () => {
+      const port = (s.address() as { port: number }).port;
+      s.close(() => resolve(port));
+    });
+  });
+}
+
+/** 쇼핑몰 = HTTP API(:4100) + PostgreSQL 와이어 프로토콜(:5433, 0 이면 빈 포트) + 손님 트래픽 */
 export async function startShop(opts: ShopServerOptions = {}): Promise<ShopHandle> {
   const host = opts.host ?? '127.0.0.1';
   const log = opts.log ?? (() => {});
@@ -61,7 +72,9 @@ export async function startShop(opts: ShopServerOptions = {}): Promise<ShopHandl
   const shop = new Shop(db, opts.shop);
   const traffic = new Traffic(shop, { log, ...(typeof opts.traffic === 'object' ? opts.traffic : {}) });
 
-  const pgServer = new PGLiteSocketServer({ db, port: opts.pgPort ?? 5433, host, maxConnections: 8 });
+  // pgPort 0: 운영체제에 빈 포트를 묻는다(임의로 고른 포트가 나가는 연결의 임시 포트와 겹치지 않게)
+  const pgPort = opts.pgPort === 0 ? await freePort(host) : opts.pgPort ?? 5433;
+  const pgServer = new PGLiteSocketServer({ db, port: pgPort, host, maxConnections: 8 });
   await pgServer.start();
 
   const server = http.createServer(async (req, res) => {
@@ -117,7 +130,7 @@ export async function startShop(opts: ShopServerOptions = {}): Promise<ShopHandl
     shop,
     traffic,
     httpUrl: `http://${host}:${httpPort}`,
-    pgUrl: `postgres://postgres@${host}:${opts.pgPort ?? 5433}/postgres`,
+    pgUrl: `postgres://postgres@${host}:${pgPort}/postgres`,
     async stop() {
       traffic.stop();
       await new Promise<void>((resolve) => server.close(() => resolve()));

@@ -22,7 +22,7 @@ function assert(cond: unknown, msg: string): asserts cond {
   console.log(`  ✓ ${msg}`);
 }
 
-const shop = await startShop({ httpPort: 0, pgPort: 57900 + Math.floor(Math.random() * 300), traffic: { firstFlashSaleMs: 2500, flashSaleEveryMs: 0, orderEveryMs: [300, 700] } });
+const shop = await startShop({ httpPort: 0, pgPort: 0, traffic: { firstFlashSaleMs: 2500, flashSaleEveryMs: 0, orderEveryMs: [300, 700] } });
 const rt = new IsomorphRuntime({ adapter: new PostgresAdapter({ connectionString: shop.pgUrl, system: 'demo-shop', changeFeed: 'log', feedMs: 50 }), pollMs: 1000, numRuns: 40, compile: { mode: 'heuristic' } });
 await rt.start();
 const srv = await serve(rt, { port: 0, staticDir: path.join(root, 'packages/client/dist') });

@@ -7,10 +7,9 @@ import { EventStore, IsomorphRuntime, serve } from '../src/index.ts';
 
 let shop: ShopHandle;
 let rt: IsomorphRuntime;
-const PG_PORT = 56000 + Math.floor(Math.random() * 900);
 
 beforeAll(async () => {
-  shop = await startShop({ httpPort: 0, pgPort: PG_PORT, traffic: false, shop: { paymentMs: [80, 100], paymentFailureRate: 0 } });
+  shop = await startShop({ httpPort: 0, pgPort: 0, traffic: false, shop: { paymentMs: [80, 100], paymentFailureRate: 0 } });
   rt = new IsomorphRuntime({ adapter: new PostgresAdapter({ connectionString: shop.pgUrl, system: 'demo-shop' }), writeMode: 'medium', pollMs: 60_000, numRuns: 40, compile: { mode: 'heuristic' } });
   expect(await rt.start()).toBe('running');
 });

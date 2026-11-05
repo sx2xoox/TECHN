@@ -233,7 +233,12 @@ async function main() {
     if (!state.hello) return;
     const e = m.entity;
     inspector.render(m, e ? kindTitle(e.kind) : '', state.hello.grammar.invariants, state.mode === 'history');
-    if (m.entityId === state.selected) town.setLinks(m.entityId, (m.related ?? []).filter((r) => r.entityId).map((r) => ({ id: r.entityId!, bad: r.violations.length > 0, cross: r.crossSystem })));
+    if (m.entityId === state.selected)
+      town.setLinks(
+        m.entityId,
+        (m.related ?? []).filter((r) => r.entityId).map((r) => ({ id: r.entityId!, bad: r.violations.length > 0, cross: r.crossSystem })),
+        (m.chain ?? []).filter((s) => s.entityId).map((s) => s.entityId!),
+      );
   }
 
   function onDryRun(m: DryRunMessage) {

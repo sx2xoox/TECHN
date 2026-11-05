@@ -8,6 +8,11 @@ export interface FieldRef {
   field: string;
   /** 다른 시스템을 가리키는 연결(여러 시스템을 한 세계로 묶을 때 생긴다) */
   crossSystem?: boolean;
+  /**
+   * 이 참조는 '이 행의 문제가 비롯된 곳' 을 가리킨다(시스템이 직접 계산한 인과: 예를 들어 실패한 트레이스에서 오류가 시작된 서비스).
+   * 원인 진단은 시간 순서보다 이것을 먼저 믿고 따라간다.
+   */
+  blame?: boolean;
 }
 
 export interface FieldStats {

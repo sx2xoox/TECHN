@@ -269,6 +269,27 @@ export class Inspector {
         h('div', { class: 'diagnosis' }, h('strong', null, d.title), h('p', null, d.detail), d.suggestion ? h('p', { class: 'suggest' }, '고치는 법: ', d.suggestion) : null),
       );
     }
+    // 근본 원인 사슬: 여기서 거슬러 올라간 곳들(마지막이 근본 원인)
+    if (m.chain?.length) {
+      const steps = m.chain;
+      this.el.append(this.stable('chain', JSON.stringify([m.entityId, steps]), () =>
+        h('div', { class: 'chain' },
+          h('h3', null, '근본 원인 사슬 ', h('span', { class: 'muted small' }, '(지도에 빨간 길)')),
+          h('ol', null,
+            h('li', { class: 'here' }, h('span', { class: 'muted small' }, '여기'), ' ', e.label),
+            ...steps.map((s, i) =>
+              h('li', { class: i === steps.length - 1 ? 'root' : '' },
+                h('span', { class: 'via' }, s.via === 'blame' ? '↑ 오류가 시작된 곳' : '↑ 먼저 법칙을 어김'),
+                ' ',
+                s.entityId ? h('button', { class: 'link', onclick: () => this.hnd.onSelect(s.entityId!) }, s.label) : h('span', null, s.label),
+                ' ', h('span', { class: 'muted small' }, s.title),
+                s.crossSystem ? h('span', { class: 'badge cross' }, '다른 시스템') : null,
+                i === steps.length - 1 ? h('span', { class: 'badge root' }, '근본 원인') : null,
+                h('div', { class: 'small bad' }, `⚠ ${s.violation}`),
+              )),
+          ),
+        )));
+    }
     if (m.causes.length) {
       const t0 = m.causes[0].at;
       this.el.append(

@@ -45,6 +45,16 @@ describe('OpenTelemetry adapter (real SDK)', () => {
     if (result.failed) expect(['degraded', 'failing']).toContain(svc.payments.status);
   });
 
+  it('finds where failures start by walking each failed trace down to its deepest error', async () => {
+    const svc = Object.fromEntries((await adapter.snapshot()).collections.services.map((s) => [s.id, s]));
+    // web 의 실패는 모두 payments 가 실패해서 생겼다 → web 의 '실패가 시작된 곳' = payments, payments 는 스스로 실패
+    expect(result.failed).toBeGreaterThan(0);
+    expect(svc.web.error_origin_id).toBe('payments');
+    expect(svc.payments.error_origin_id).toBeNull();
+    const schema = await adapter.introspect();
+    expect(schema.collections.find((c) => c.name === 'services')!.fields.find((f) => f.name === 'error_origin_id')!.ref).toMatchObject({ collection: 'services', blame: true });
+  });
+
   it('links spans across services through the propagated trace context', async () => {
     const spans = (await adapter.snapshot()).collections.spans;
     const charges = spans.filter((s) => s.name === 'POST /charge');

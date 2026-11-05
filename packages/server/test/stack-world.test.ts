@@ -90,6 +90,19 @@ describe('one world for the cluster and its services', () => {
     expect(rel.violations.map((v) => v.title)).toContain('준비된 복제본 수가 원하는 수에 닿아야 함');
   });
 
+  it('follows the root-cause chain: web ← payments (where the errors start) ← the deployment that broke first', () => {
+    const web = rt.inspect('otel_services:web');
+    expect(viol('otel_services', 'web').length).toBe(1); // web 도 실패한다(payments 를 부르므로)
+    expect(web.diagnosis).toMatchObject({ pattern: 'linked', title: '오류가 다른 곳에서 시작됨', confidence: 'high' });
+    expect(web.chain!.map((s) => [s.collection, String(s.pk), s.via])).toEqual([
+      ['otel_services', 'payments', 'blame'],
+      ['k8s_deployments', 'shop/payments', 'linked'],
+    ]);
+    expect(web.chain!.at(-1)!.crossSystem).toBe(true);
+    // 근본 원인 쪽에서는 더 거슬러 오를 곳이 없다
+    expect(rt.inspect('k8s_deployments:shop/payments').chain ?? []).toEqual([]);
+  });
+
   it('acts on the right system: scaling goes to Kubernetes, the trace side stays read-only', () => {
     expect(rt.grammar!.affordances.map((a) => a.id)).toEqual(['k8s_deployments_restock']);
     const dr = rt.dryRun('k8s_deployments:shop/payments', 'k8s_deployments_restock');

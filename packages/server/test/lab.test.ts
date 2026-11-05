@@ -14,7 +14,7 @@ let shop: ShopHandle;
 let rt: IsomorphRuntime;
 
 beforeAll(async () => {
-  shop = await startShop({ httpPort: 0, pgPort: 59200 + Math.floor(Math.random() * 300), traffic: { orderEveryMs, firstFlashSaleMs: 2500, flashSaleEveryMs: 6000 } });
+  shop = await startShop({ httpPort: 0, pgPort: 0, traffic: { orderEveryMs, firstFlashSaleMs: 2500, flashSaleEveryMs: 6000 } });
   rt = new IsomorphRuntime({ adapter: new PostgresAdapter({ connectionString: shop.pgUrl, system: 'demo-shop', changeFeed: 'log', feedMs: 50 }), pollMs: 1000, numRuns: 30, compile: { mode: 'heuristic' } });
   expect(await rt.start()).toBe('running');
   const gap = () => new Promise((r) => setTimeout(r, 200));

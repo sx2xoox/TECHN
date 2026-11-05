@@ -78,5 +78,12 @@ describe.skipIf(!KUBECONFIG || !BACKEND)('one world: a real cluster and the serv
     const rel = rt.inspect('otel_services:payments').related!.find((x) => x.crossSystem)!;
     expect(rel).toMatchObject({ collection: 'k8s_deployments', pk: 'default/payments' });
     expect(rel.violations.length).toBeGreaterThan(0);
+    // web 도 실패한다(payments 를 부르므로). 근본 원인 사슬: web ← payments(실제 트레이스로 본 오류 시작점) ← 클러스터
+    await until(async () => (await rt.tick(), viol('otel_services', 'web').length > 0), 60_000, 'web 서비스 실패');
+    const chain = rt.inspect('otel_services:web').chain ?? [];
+    expect(chain.map((s) => [s.collection, String(s.pk), s.via])).toEqual([
+      ['otel_services', 'payments', 'blame'],
+      ['k8s_deployments', 'default/payments', 'linked'],
+    ]);
   }, 300_000);
 });

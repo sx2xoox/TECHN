@@ -27,7 +27,7 @@ export class Town {
   private overlay = new Container();
   /** 고른 개체와 연결된 곳을 잇는 점선 */
   private linkLayer = new Graphics();
-  private links: { from: string; to: { id: string; bad: boolean; cross: boolean }[] } | null = null;
+  private links: { from: string; to: { id: string; bad: boolean; cross: boolean }[]; chain: string[] } | null = null;
   private views = new Map<string, BuildingView | NpcView>();
   private layout: TownLayout | null = null;
   private grammar: WorldGrammar | null = null;
@@ -98,9 +98,9 @@ export class Town {
   }
 
   /** 연결된 곳 표시(살펴보기에서 받은 목록). from 이 null 이면 지운다 */
-  setLinks(from: string | null, to: { id: string; bad: boolean; cross: boolean }[]) {
+  setLinks(from: string | null, to: { id: string; bad: boolean; cross: boolean }[], chain: string[] = []) {
     const fresh = !!from && from !== this.framedFor;
-    this.links = from && to.length ? { from, to: to.slice(0, 12) } : null;
+    this.links = from && (to.length || chain.length) ? { from, to: to.slice(0, 12), chain: chain.slice(0, 6) } : null;
     this.framedFor = from;
     if (!this.links) this.linkLayer.clear();
     else if (fresh) this.frameLinks();
@@ -111,7 +111,7 @@ export class Town {
   /** 새로 고른 개체와 '탈이 난' 연결 상대가 화면(살펴보기 창 왼쪽)에 함께 보이게 시야를 넓힌다 */
   private frameLinks() {
     if (!this.links) return;
-    const sick = this.links.to.filter((t) => t.bad || t.cross).map((t) => this.centerOf(t.id));
+    const sick = [...this.links.to.filter((t) => t.bad || t.cross).map((t) => t.id), ...this.links.chain].map((id) => this.centerOf(id));
     const pts = [this.centerOf(this.links.from), ...sick].filter((p): p is { x: number; y: number } => !!p);
     if (pts.length < 2) return;
     const { width, height } = this.app.screen;
@@ -167,6 +167,25 @@ export class Town {
       }
       g.stroke({ width: 2, color, alpha: 0.9 });
       g.circle(b.x, b.y, 5).stroke({ width: 2, color, alpha: 0.9 });
+    }
+    // 근본 원인 사슬: 고른 개체에서 근본 원인까지 굵은 빨간 길, 끝에는 고동치는 고리
+    let prev = a;
+    for (const [i, id] of this.links.chain.entries()) {
+      const b = this.centerOf(id);
+      if (!b) continue;
+      const dx = b.x - prev.x;
+      const dy = b.y - prev.y;
+      const len = Math.hypot(dx, dy);
+      for (let s = phase; s < len; s += 8) {
+        const e = Math.min(len, s + 6);
+        g.moveTo(prev.x + (dx * s) / len, prev.y + (dy * s) / len).lineTo(prev.x + (dx * e) / len, prev.y + (dy * e) / len);
+      }
+      g.stroke({ width: 4, color: 0xe61919, alpha: 0.95 });
+      if (i === this.links.chain.length - 1) {
+        const r = 9 + 3 * Math.sin(this.time * 6);
+        g.circle(b.x, b.y, r).stroke({ width: 3, color: 0xe61919, alpha: 0.95 });
+      }
+      prev = b;
     }
   }
 

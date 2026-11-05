@@ -199,6 +199,8 @@ export class OtelAdapter implements Adapter {
             { name: 'error_count', type: 'integer', nullable: false },
             { name: 'avg_latency_ms', type: 'number', nullable: false },
             { name: 'last_seen_at', type: 'timestamp', nullable: false },
+            // 이 서비스의 실패가 시작된 곳: 실패한 요청마다 오류가 난 가장 깊은 스팬의 서비스(자기 자신이면 null)
+            { name: 'error_origin_id', type: 'string', nullable: true, ref: { collection: 'services', field: 'id', blame: true }, refEnforced: false },
           ],
         },
         {
@@ -222,12 +224,49 @@ export class OtelAdapter implements Adapter {
     }), []);
   }
 
+  /**
+   * 서비스마다 '실패가 시작된 곳': 그 서비스가 받은 실패한 요청에서, 오류 상태인 자식을 따라 가장 깊이 내려간 스팬의 서비스.
+   * 실패의 절반 이상이 같은 다른 서비스에서 시작됐으면 그 서비스, 아니면(스스로 실패) 없음.
+   */
+  private errorOrigins(recent: SpanRec[]): Map<string, string> {
+    const children = new Map<string, SpanRec[]>();
+    for (const s of this.spans.values()) {
+      if (!s.parentId) continue;
+      const list = children.get(s.parentId);
+      if (list) list.push(s);
+      else children.set(s.parentId, [s]);
+    }
+    const deepest = (s: SpanRec, depth = 0): SpanRec => {
+      if (depth > 64) return s;
+      const bad = (children.get(s.id) ?? []).find((c) => c.status === 'error');
+      return bad ? deepest(bad, depth + 1) : s;
+    };
+    const tally = new Map<string, Map<string, number>>();
+    for (const s of recent) {
+      if (s.status !== 'error') continue;
+      const entry = s.kind === 'server' || s.kind === 'consumer' || !s.parentId || this.owner.get(s.parentId) !== s.service;
+      if (!entry) continue;
+      const origin = deepest(s).service;
+      const t = tally.get(s.service) ?? new Map<string, number>();
+      t.set(origin, (t.get(origin) ?? 0) + 1);
+      tally.set(s.service, t);
+    }
+    const out = new Map<string, string>();
+    for (const [svc, t] of tally) {
+      const total = [...t.values()].reduce((a, b) => a + b, 0);
+      const [top, n] = [...t.entries()].filter(([o]) => o !== svc).sort((a, b) => b[1] - a[1])[0] ?? [null, 0];
+      if (top && n * 2 >= total) out.set(svc, top);
+    }
+    return out;
+  }
+
   async snapshot(only?: string[]): Promise<Snapshot> {
     const now = Date.now();
     const windowMs = this.opts.windowMs ?? 60_000;
     const recent = [...this.spans.values()].filter((s) => now - s.end <= windowMs);
     const collections: Snapshot['collections'] = {};
     if (!only || only.includes('services')) {
+      const origins = this.errorOrigins(recent);
       collections.services = [...this.services.entries()].map(([name, last]): Row => {
         // 서비스가 '받은' 호출: 서버·소비자 스팬, 없으면 그 서비스의 루트 스팬
         const mine = recent.filter((s) => s.service === name && (s.kind === 'server' || s.kind === 'consumer' || !s.parentId || this.owner.get(s.parentId) !== name));
@@ -241,6 +280,7 @@ export class OtelAdapter implements Adapter {
           error_count: errors,
           avg_latency_ms: mine.length ? Math.round(mine.reduce((a, s) => a + (s.end - s.start), 0) / mine.length) : 0,
           last_seen_at: new Date(last).toISOString(),
+          error_origin_id: origins.get(name) ?? null,
         };
       });
     }

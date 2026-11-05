@@ -47,7 +47,7 @@ describe('notifications', () => {
     expect(detectFormat('https://discord.com/api/webhooks/1/abc')).toBe('discord');
     expect(detectFormat('https://example.com/hook')).toBe('json');
     expect(deepLink('https://iso.example.com', 'products:3', 1700000000000)).toBe('https://iso.example.com/?focus=products%3A3&at=1700000000000');
-    const item: NotifyItem = { phase: 'start', at: 1, title: '재고 <!channel> 음수', severity: 'critical', collection: 'products', pk: '3', entityId: 'products:3', values: {}, diagnosis: { pattern: 'race', title: '경쟁 조건', detail: 'x'.repeat(500) }, link: 'https://iso.example.com/?focus=products%3A3' };
+    const item: NotifyItem = { phase: 'start', at: 1, title: '재고 <!channel> 음수', severity: 'critical', collection: 'products', pk: '3', entityId: 'products:3', values: {}, diagnosis: { pattern: 'race', title: '경쟁 조건', detail: 'x'.repeat(500) }, link: 'https://iso.example.com/?focus=products%3A3', root: null };
     const slack = formatPayload('slack', { system: 'shop', text: '', items: [item] }) as { text: string };
     expect(slack.text).toContain('&lt;!channel&gt;'); // 데이터가 Slack 멘션이 되지 않는다
     expect(slack.text).toContain('<https://iso.example.com/?focus=products%3A3|세계에서 보기>');
