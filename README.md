@@ -313,9 +313,10 @@ docker build -t isomorph .
 docker run --rm -p 4000:4000 -e ISOMORPH_TOKEN=<운영자 토큰> isomorph connect postgres://user:pass@db:5432/app --host 0.0.0.0
 ```
 
-인자 없이 실행하면 OpenTelemetry 수신기(4318)로 열립니다. 사용자 실험은 `isomorph study` 로 엽니다. CI 는 이미지를 실제로 빌드한 뒤 아래를 확인합니다.
+인자 없이 실행하면 OpenTelemetry 수신기(4318)로 열립니다. 이때는 수신 토큰도 필요합니다(`-e ISOMORPH_OTLP_TOKEN=<수신 토큰>`). 사용자 실험은 `isomorph study` 로 엽니다. CI 는 이미지를 실제로 빌드한 뒤 아래를 확인합니다.
 
-- 토큰 없이 바깥 주소로 열면 시작을 거부하는지.
+- 운영자 토큰이나 수신 토큰 없이 바깥 주소로 열면 시작을 거부하는지.
+- 수신 토큰 없는 트레이스를 401 로 거절하는지.
 - OTLP 트레이스를 보냈을 때 세계에 나타나는지.
 - 익명 요청이 401 로 막히는지.
 
@@ -357,7 +358,13 @@ npx tsx packages/server/src/cli.ts uninstall-feed --config isomorph.config.json
 - **운영자 토큰**(`token` 또는 `ISOMORPH_TOKEN`): 보고, 행동할 수 있습니다.
 - **관람자 토큰**(`viewerToken` 또는 `ISOMORPH_VIEWER_TOKEN`): 보고 살펴볼 수만 있습니다. 행동 버튼이 잠기고 서버도 거절합니다.
 - `http://호스트:4000/?token=…` 링크로 한 번 열면 토큰이 HttpOnly 쿠키로 옮겨지고 주소창에서 지워집니다.
-- 토큰 없이 `127.0.0.1` 이 아닌 주소로 열려고 하면 시작을 거부합니다. 다른 출처(Origin)에서 오는 WebSocket 도 거절합니다.
+- 토큰 없이 `127.0.0.1` 이 아닌 주소로 열려고 하면 시작을 거부합니다. 빈 주소(`--host ""`)도 모든 주소로 듣는 것이므로 거부합니다. 다른 출처(Origin)에서 오는 WebSocket 도 거절합니다.
+- **토큰 없이 연 로컬 세계**는 `localhost`·`127.0.0.1` 이라는 Host 로 온 요청만 받습니다. 그래서 악성 웹페이지가 자기 도메인을 127.0.0.1 로 바꿔 가리키는 공격(DNS 리바인딩)으로 세계를 조작할 수 없습니다.
+- **민감 필드**(비밀번호·이메일·토큰·주소 등 이름으로 판별)는 세계·인스펙터에서 가려집니다. 사건 기록, 법칙 위반 값, 가설 실험실의 학습 모델에서도 가려지며, 값이 바뀐 사실만 남습니다.
+- **화면에 나가는 오류 문구**에서는 URL 의 사용자·비밀번호와 쿼리 문자열(api_key 등)을 지웁니다. 원문은 서버 로그에만 남습니다.
+- **가설 실험실의 시뮬레이션**은 제한 안에서만 돕니다. 같은 배수를 여러 번 걸어도 곱이 20배를 넘지 않고, 한 번 실행에 사건 5만 개까지입니다. 접속마다 하나, 서버 전체로 둘까지 동시에 돌 수 있습니다.
+- **OpenTelemetry 수신기**를 바깥 주소로 열 때는 수신 토큰(`ISOMORPH_OTLP_TOKEN`)이 필요합니다. 이 토큰은 운영자 토큰과 다른 값으로, 보내는 앱은 `OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer <토큰>` 으로 보냅니다. `application/json` 이 아닌 요청은 다른 사이트에서 보낸 위장 요청일 수 있어 받지 않습니다.
+- 독립 보안 검토에서 나온 문제(높음 3·중간 2·낮음 6)는 모두 고쳤고, 각각 회귀 시험이 있습니다(`packages/server/test/security.test.ts`).
 
 ### 어댑터 SDK — 무엇이든 세계로
 
@@ -504,7 +511,7 @@ npm run bench:lab
 npm run study:selftest
 ```
 
-- `npm test`: 단위·통합 테스트 89개입니다. 실제 시스템 테스트 3개는 환경변수로 켭니다(아래).
+- `npm test`: 단위·통합 테스트 100개입니다. 실제 시스템 테스트 3개는 환경변수로 켭니다(아래).
 - `npm run bench:compile`: 컴파일러 KPI 를 잽니다.
 - `npm run e2e`: 실제 브라우저로 데모 시나리오를 처음부터 끝까지 수행합니다.
 - `npm run bench:latency`: 상태 변화가 세계에 반영되기까지의 지연을 폴링/푸시 두 방식으로 잽니다.
