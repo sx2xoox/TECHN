@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import {
   attachStats,
+  buildInspect,
   keyOf,
   buildLegend,
   diagnose,
@@ -386,47 +387,8 @@ export class IsomorphRuntime extends EventEmitter {
 
   inspect(entityIdValue: string, atTs?: number): InspectMessage {
     const snap = this.snapshotFor(atTs);
-    const parsed = parseEntityId(entityIdValue);
-    const kind = parsed ? kindById(this.grammar, parsed.kind) : undefined;
-    const empty: InspectMessage = { type: 'inspect', entityId: entityIdValue, entity: null, collection: kind?.collection ?? '', pk: parsed?.pk ?? '', row: null, fields: [], violations: [], causes: [], diagnosis: null, affordances: [] };
-    if (!snap || !kind || !parsed) return empty;
-    const col = findCollection(this.schema, kind.collection)!;
-    const world = observe(this.withOutside(snap), this.grammar, this.schema);
-    const entity = world.entities.find((e) => e.id === entityIdValue) ?? null;
-    const row = (snap.collections[kind.collection] ?? []).find((r) => String(pkOf(r, col)) === parsed.pk) ?? null;
-    const masked = row ? maskRow(row, col) : null;
-    const fields: InspectField[] = col.fields.map((f) => {
-      const b = kind.channels.find((x) => x.field === f.name);
-      const role: InspectField['role'] =
-        f.name === col.primaryKey ? 'pk'
-          : f.name === kind.labelField ? 'label'
-            : kind.route?.from === f.name || kind.route?.to === f.name ? 'route'
-              : kind.recency?.field === f.name ? 'recency'
-                : kind.hidden.includes(f.name) ? 'hidden' : undefined;
-      return {
-        name: f.name,
-        type: f.type,
-        value: masked ? masked[f.name] ?? null : null,
-        ...(b ? { channel: b.channel, visual: entity?.visual[b.channel] ?? null } : {}),
-        ...(role ? { role } : {}),
-        ...(f.sensitive ? { sensitive: true } : {}),
-      };
-    });
-    const violations = world.violations.filter((v) => v.collection === kind.collection && String(v.pk) === parsed.pk);
-    const events = this.store.eventsBetween(snap.ts - 10 * 60_000, snap.ts);
-    const sevRank = { critical: 0, warning: 1, info: 2 } as const;
-    const top = [...violations].sort((a, b) => sevRank[a.severity] - sevRank[b.severity])[0];
-    const topInv = top ? this.grammar.invariants.find((i) => i.id === top.invariantId) : undefined;
-    const causes = top ? findCauses(top, events, this.schema, 20_000, row ?? undefined, topInv) : [];
-    const diagnosis = top ? diagnose(top, topInv, causes) : null;
-    const affordances: AffordanceOption[] = this.grammar.affordances
-      .filter((a) => a.entityKind === kind.id)
-      .map((a) => {
-        const allowed = atTs === undefined && riskAllowed(this.writeMode, a.risk);
-        const reason = atTs !== undefined ? '과거 시점에서는 행동할 수 없습니다' : !riskAllowed(this.writeMode, a.risk) ? `쓰기 권한(${this.writeMode})이 위험도 ${a.risk} 행동을 허용하지 않습니다` : undefined;
-        return { id: a.id, title: a.title, description: a.description, risk: a.risk, allowed, ...(reason ? { reason } : {}) };
-      });
-    return { type: 'inspect', entityId: entityIdValue, entity, collection: kind.collection, pk: parsed.pk, row: masked, fields, violations, causes, diagnosis, affordances };
+    if (!snap || !this.grammar) return { type: 'inspect', entityId: entityIdValue, entity: null, collection: '', pk: '', row: null, fields: [], violations: [], causes: [], diagnosis: null, affordances: [] };
+    return buildInspect({ snapshot: this.withOutside(snap), grammar: this.grammar, schema: this.schema, events: this.store.eventsBetween(snap.ts - 10 * 60_000, snap.ts), entityId: entityIdValue, writeMode: this.writeMode, history: atTs !== undefined });
   }
 
   /** 드라이런: 아무것도 바꾸지 않고, 바뀔 미래의 장면을 계산한다. */

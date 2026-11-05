@@ -8,3 +8,4 @@ test-results/
 
 # 사용자 실험 기록(참가자 데이터)은 절대 커밋하지 않는다
 data/study/
+dist-snapshot/

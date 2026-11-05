@@ -8,6 +8,8 @@ export interface TopbarHandlers {
   onLab(): void;
   /** 색각 이상 미리보기를 다음 단계로(일반 → 적색맹 → 녹색맹 → 청색맹) */
   onVision(): void;
+  /** 최근 몇 분의 세계를 HTML 한 파일(공유본)로 내려받기 — 운영자만 */
+  onShare(): void;
   onLegend(): void;
   onFit(): void;
   onZoom(dir: number): void;
@@ -23,12 +25,14 @@ export class Topbar {
   private viol = h('button', { class: 'chip viol hidden' });
   private write = h('span', { class: 'chip write' });
   private fps = h('span', { class: 'chip fps hidden' });
+  private share = h('button', { class: 'btn hidden', title: '최근 10분의 세계를 HTML 한 파일로 내려받습니다(서버 없이 열리고, 민감 정보는 가명 처리)' }, '공유본');
   private vision = h('button', { class: 'btn', title: '색각 이상이 있는 사람에게 세계가 어떻게 보이는지 미리보기(근사)' }, '색각: 일반');
 
   constructor(private hnd: TopbarHandlers) {
     this.verify.addEventListener('click', () => hnd.onVerification());
     this.viol.addEventListener('click', () => hnd.onNextViolation());
     this.vision.addEventListener('click', () => hnd.onVision());
+    this.share.addEventListener('click', () => hnd.onShare());
     this.el.append(
       h('div', { class: 'brand' }, h('span', { class: 'logo' }, '◆'), 'ISOMORPH'),
       this.title,
@@ -39,6 +43,7 @@ export class Topbar {
       this.write,
       this.fps,
       h('button', { class: 'btn lab', onclick: () => hnd.onLab(), title: '가설 실험실' }, '가설 실험실'),
+      this.share,
       this.vision,
       h('button', { class: 'btn', onclick: () => hnd.onLegend(), title: '범례' }, '범례'),
       h('button', { class: 'btn', onclick: () => hnd.onFit(), title: '전체 보기' }, '전체'),
@@ -54,6 +59,7 @@ export class Topbar {
   }
 
   setHello(m: HelloMessage) {
+    this.share.classList.toggle('hidden', this.sharedAt !== null || m.role === 'viewer');
     clear(this.title);
     this.title.append(h('strong', null, m.grammar.title), h('small', null, ` ${m.source} · ${m.system} · ${m.grammar.generatedBy === 'llm' ? 'LLM 컴파일' : m.grammar.generatedBy === 'heuristic' ? '규칙 기반 컴파일' : '수동 문법'}`));
     const v = m.verification;
@@ -68,8 +74,16 @@ export class Topbar {
 
   private push = false;
 
+  /** 공유본(오프라인 HTML)으로 열렸으면 그 시각 */
+  private sharedAt: number | null = null;
+  setShared(at: number) {
+    this.sharedAt = at;
+    this.share.classList.add('hidden');
+  }
+
   setConnection(s: 'connecting' | 'live' | 'history' | 'offline' | 'stress', at?: number) {
-    const text = { connecting: '연결 중…', live: this.push ? '실시간 · 즉시 반영' : '실시간', history: `과거 ${at ? fmtTime(at) : ''}`, offline: '연결 끊김 — 재연결 중', stress: '부하 시험' }[s];
+    const live = this.sharedAt ? `공유본 · ${new Date(this.sharedAt).toLocaleString('ko-KR')} 기준(보기 전용)` : this.push ? '실시간 · 즉시 반영' : '실시간';
+    const text = { connecting: '연결 중…', live, history: `과거 ${at ? fmtTime(at) : ''}`, offline: '연결 끊김 — 재연결 중', stress: '부하 시험' }[s];
     this.conn.className = `conn ${s}`;
     this.conn.textContent = `● ${text}`;
   }

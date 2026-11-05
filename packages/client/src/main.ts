@@ -1,6 +1,7 @@
 import './style.css';
 import { VISION_KO, type DryRunMessage, type HelloMessage, type InspectMessage, type ServerMessage, type SimulationResult, type Vision, type WorldState } from '@isomorph/core';
 import { loadFonts } from './fonts.ts';
+import { embeddedBundle, LocalServer } from './local.ts';
 import { Connection, wsUrl } from './net.ts';
 import { stressHello, stressWorld } from './stress.ts';
 import { h } from './ui/dom.ts';
@@ -33,7 +34,7 @@ async function main() {
   const toasts = new Toasts();
   const tooltip = new Tooltip();
   const legend = new LegendPanel();
-  let conn: Connection | null = null;
+  let conn: { send(m: import('@isomorph/core').ClientMessage): void } | null = null;
   const send: Connection['send'] = (m) => conn?.send(m);
 
   const kindTitle = (kindId: string) => state.hello?.grammar.kinds.find((k) => k.id === kindId)?.title ?? kindId;
@@ -99,6 +100,12 @@ async function main() {
   }
 
   const topbar = new Topbar({
+    onShare: () => {
+      const a = document.createElement('a');
+      a.href = '/api/snapshot?minutes=10';
+      a.download = '';
+      a.click();
+    },
     onVision: () => {
       const order: Vision[] = ['normal', 'protan', 'deutan', 'tritan'];
       const next = order[(order.indexOf(town.vision) + 1) % order.length];
@@ -273,8 +280,19 @@ async function main() {
     return;
   }
 
+  // 공유본(HTML 한 파일)으로 열렸으면 서버 대신 브라우저 안의 작은 서버와 이야기한다
+  const bundle = embeddedBundle();
+  if (bundle) {
+    topbar.setShared(bundle.end);
+    const local = new LocalServer(bundle, onMessage);
+    conn = local;
+    local.connect();
+    (window as unknown as { __iso: unknown }).__iso = { town, state, send, player, shared: true };
+    return;
+  }
+
   screen.connecting();
-  conn = new Connection(wsUrl(), onMessage, async (s) => {
+  const ws = new Connection(wsUrl(), onMessage, async (s) => {
     topbar.setConnection(s === 'open' ? 'live' : 'offline');
     if (s === 'open') {
       try {
@@ -285,7 +303,8 @@ async function main() {
       }
     }
   });
-  conn.connect();
+  conn = ws;
+  ws.connect();
   (window as unknown as { __iso: unknown }).__iso = { town, state, send, player };
 }
 

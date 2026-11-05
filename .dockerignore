@@ -10,3 +10,4 @@ test-results
 *.log
 docs/screenshots
 e2e-screenshots
+packages/client/dist-snapshot

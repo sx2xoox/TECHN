@@ -11,6 +11,7 @@ import { serve } from './server.ts';
 /**
  * isomorph connect <postgres://…|https://…|otel|docker> [--schema s] [--port 4000] [--write low]   설정 파일 없이 바로(읽기 전용)
  * isomorph study   사용자 실험 서버(STUDY_* 환경변수, scripts/study.ts 와 같음)
+ * isomorph snapshot <대상|--config x.json> [--observe 20] [--minutes 10] [--out world.html]   공유본(HTML 한 파일) 만들기
  * isomorph serve   --config isomorph.config.json   세계를 연다
  * isomorph compile --config isomorph.config.json --out world.json   문법만 컴파일·검증해 저장
  * isomorph verify  --config isomorph.config.json --grammar world.json   기존 문법 검증
@@ -43,16 +44,35 @@ async function main() {
     log(`참가자 화면: ${srv.url} · 진행자 화면: ${srv.adminUrl}`);
     return;
   }
+  const targetLike = (cmd === 'connect' || cmd === 'snapshot') && args[1] && !args[1].startsWith('--');
   const config =
-    cmd === 'connect'
+    targetLike
       ? configFromTarget(
           args.slice(1).filter((a, i, all) => !a.startsWith('--') && !(all[i - 1] ?? '').startsWith('--')),
           { schema: flag('schema'), port: flag('port') ? Number(flag('port')) : undefined, host: flag('host'), write: flag('write') as never },
         )
       : loadConfig(configPath);
   if (cmd === 'connect') log(`연결: ${config.adapter.type} · 쓰기 ${config.writeMode}${config.writeMode === 'read-only' ? '(바꾸려면 --write low|medium|high)' : ''}`);
+
   const adapter = await loadAdapter(config.adapter);
   const llmModel = config.compile?.model ? anthropicDraftModel({ model: config.compile.model }) : process.env.ANTHROPIC_API_KEY && cmd === 'connect' ? anthropicDraftModel({}) : undefined;
+  if (cmd === 'snapshot') {
+    // 잠깐 지켜본 뒤 그동안의 세계를 HTML 한 파일로(서버를 띄우지 않는다)
+    const { buildWorldBundle, renderSnapshotHtml } = await import('./snapshot.ts');
+    const rt = new IsomorphRuntime({ adapter, compile: { mode: config.compile?.mode ?? 'auto', model: llmModel }, pollMs: 1000, numRuns: config.numRuns, log });
+    const status = await rt.start();
+    if (status !== 'running') throw new Error(`세계를 열지 못했습니다: ${status} ${rt.error ?? ''}`);
+    const seconds = Number(flag('observe') ?? 20);
+    log(`${seconds}초 동안 지켜봅니다…`);
+    await new Promise((r) => setTimeout(r, seconds * 1000));
+    await rt.refresh();
+    const html = renderSnapshotHtml(buildWorldBundle(rt, { minutes: Number(flag('minutes') ?? 10) }), path.resolve(here, '../../client/dist-snapshot'));
+    const out = flag('out') ?? `isomorph-${config.adapter.type}-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '')}.html`;
+    fs.writeFileSync(out, html);
+    log(`공유본: ${out} (${(html.length / 1024 / 1024).toFixed(1)}MB, 서버 없이 열립니다 · 보기 전용 · 민감 정보 가명)`);
+    await rt.stop();
+    return;
+  }
 
   if (cmd === 'uninstall-feed') {
     // 푸시 관측용으로 설치한 트리거·함수·로그 테이블 제거

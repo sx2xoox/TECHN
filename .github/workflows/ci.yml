@@ -60,6 +60,8 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - run: npm run build
       - run: npm run e2e -- --shots e2e-screenshots
+      - name: shareable snapshot opens offline, read-only, without sensitive values
+        run: npm run e2e:snapshot -- --shots e2e-screenshots
       - name: user-study kit self-test (bots, not data)
         run: npm run study:selftest -- --shots e2e-screenshots
       - uses: actions/upload-artifact@v4

@@ -108,6 +108,8 @@ export function attachStats(schema: SystemSchema, snapshot: Snapshot): SystemSch
         fields: c.fields.map((f) => {
           const values = rows.map((r) => r[f.name]).filter((v) => v !== null && v !== undefined);
           const stats: FieldStats = { distinct: new Set(values.map((v) => JSON.stringify(v))).size };
+          // 민감 필드는 개수만 센다: 표본 값·범위·enum 을 만들지 않는다(통계는 LLM 프롬프트·공유본으로도 나가므로)
+          if (f.sensitive) return { ...f, stats };
           const nums = values.filter((v): v is number => typeof v === 'number');
           if (nums.length) {
             stats.min = Math.min(...nums);

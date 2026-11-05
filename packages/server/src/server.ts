@@ -5,6 +5,7 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import type { ClientMessage, ServerMessage, WorldState } from '@isomorph/core';
 import type { IsomorphRuntime } from './runtime.ts';
 import { hostHeaderIsLoopback, isLoopback, presentedToken, resolveRole, sameOrigin, sessionCookie, type AuthOptions, type Role } from './auth.ts';
+import { buildWorldBundle, renderSnapshotHtml } from './snapshot.ts';
 
 export interface ServeOptions {
   port?: number;
@@ -86,6 +87,25 @@ export async function serve(runtime: IsomorphRuntime, opts: ServeOptions = {}) {
     if (url.pathname === '/api/hello') {
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
       return res.end(JSON.stringify({ status: runtime.status, error: runtime.error, compileMode: runtime.compileMode, fallbackReason: runtime.fallbackReason, rounds: runtime.compileRounds, ...(runtime.grammar ? runtime.hello() : {}), role }));
+    }
+    if (url.pathname === '/api/snapshot') {
+      // 공유본은 시스템의 기록을 담으므로 운영자만 만든다(민감 필드는 가명 처리)
+      if (role !== 'operator') {
+        res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' });
+        return res.end('공유본은 운영자만 만들 수 있습니다');
+      }
+      try {
+        const viewerDir = path.join(path.dirname(opts.staticDir ?? ''), 'dist-snapshot');
+        const minutes = Math.max(1, Math.min(60, Number(url.searchParams.get('minutes')) || 10));
+        const bundle = buildWorldBundle(runtime, { minutes });
+        const html = renderSnapshotHtml(bundle, viewerDir);
+        const name = `isomorph-${bundle.hello.system}-${new Date(bundle.end).toISOString().slice(0, 16).replace(/[:T]/g, '')}.html`.replace(/[^\w.-]/g, '_');
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-disposition': `attachment; filename="${name}"`, 'cache-control': 'no-store' });
+        return res.end(html);
+      } catch (e) {
+        res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });
+        return res.end(`공유본을 만들지 못했습니다: ${e instanceof Error ? e.message : e}`);
+      }
     }
     if (url.pathname === '/api/world') {
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
