@@ -1,0 +1,12 @@
+node_modules
+**/node_modules
+packages/client/dist
+dist
+.git
+.data
+data
+coverage
+test-results
+*.log
+docs/screenshots
+e2e-screenshots

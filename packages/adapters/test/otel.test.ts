@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { OtelAdapter } from '../src/index.ts';
 import { startTwoServices, type TwoServices } from '../../../examples/otel/two-services.ts';
@@ -6,6 +9,7 @@ import { startTwoServices, type TwoServices } from '../../../examples/otel/two-s
  * 진짜 OpenTelemetry SDK(공식 OTLP/HTTP 내보내기)가 만든 트레이스를 받아 세계용 행으로 바꾸는지.
  * 보내는 쪽 코드는 ISOMORPH 와 무관한 공식 라이브러리다.
  */
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 let adapter: OtelAdapter;
 let app: TwoServices;
 let result: { ok: number; failed: number };
@@ -51,6 +55,16 @@ describe('OpenTelemetry adapter (real SDK)', () => {
     // 같은 서비스 안의 부모·자식은 '부른 쪽' 이 없다
     expect(spans.filter((s) => s.name === 'POST payments').every((s) => s.caller_id === null)).toBe(true);
     expect(new Set(charges.map((s) => s.trace_id)).size).toBe(24);
+  });
+
+  it('accepts the hand-written OTLP sample used by the container smoke test', async () => {
+    const a = new OtelAdapter({ port: 0, windowMs: 10 * 365 * 24 * 3600_000 });
+    a.ingest(JSON.parse(fs.readFileSync(path.join(root, 'examples/otel/sample-otlp.json'), 'utf8')));
+    const snap = await a.snapshot();
+    expect(snap.collections.services.map((s) => s.id).sort()).toEqual(['payments', 'web']);
+    const charges = snap.collections.spans.filter((s) => s.name === 'POST /charge');
+    expect(charges.map((s) => s.caller_id)).toEqual(['web', 'web']);
+    expect(snap.collections.services.find((s) => s.id === 'payments')!.error_count).toBe(1);
   });
 
   it('refuses protobuf with a clear message and stays read-only', async () => {

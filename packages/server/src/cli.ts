@@ -4,11 +4,13 @@ import { fileURLToPath } from 'node:url';
 import { attachStats, formatReport, verifyGrammar } from '@isomorph/core';
 import { anthropicDraftModel, compile } from '@isomorph/compiler';
 import { loadAdapter, PostgresAdapter } from '@isomorph/adapters';
-import { loadAssets, loadConfig, loadGrammar } from './config.ts';
+import { configFromTarget, loadAssets, loadConfig, loadGrammar } from './config.ts';
 import { IsomorphRuntime } from './runtime.ts';
 import { serve } from './server.ts';
 
 /**
+ * isomorph connect <postgres://…|https://…|otel|docker> [--schema s] [--port 4000] [--write low]   설정 파일 없이 바로(읽기 전용)
+ * isomorph study   사용자 실험 서버(STUDY_* 환경변수, scripts/study.ts 와 같음)
  * isomorph serve   --config isomorph.config.json   세계를 연다
  * isomorph compile --config isomorph.config.json --out world.json   문법만 컴파일·검증해 저장
  * isomorph verify  --config isomorph.config.json --grammar world.json   기존 문법 검증
@@ -25,9 +27,32 @@ const configPath = flag('config') ?? 'isomorph.config.json';
 const log = (m: string) => console.log(`[isomorph] ${m}`);
 
 async function main() {
-  const config = loadConfig(configPath);
+  if (cmd === 'study') {
+    const { startStudyServer } = await import('./study.ts');
+    const srv = await startStudyServer({
+      port: Number(process.env.PORT ?? 4100),
+      host: process.env.HOST ?? '127.0.0.1',
+      staticDir: path.resolve(here, '../../client/dist'),
+      dataDir: path.resolve(process.env.STUDY_DATA ?? 'data/study'),
+      conditions: (process.env.STUDY_CONDITIONS ?? 'world,table').split(',') as never,
+      perCondition: Number(process.env.STUDY_PER_CONDITION ?? 5),
+      accessCode: process.env.STUDY_ACCESS_CODE || undefined,
+      adminToken: process.env.STUDY_ADMIN_TOKEN || undefined,
+      log,
+    });
+    log(`참가자 화면: ${srv.url} · 진행자 화면: ${srv.adminUrl}`);
+    return;
+  }
+  const config =
+    cmd === 'connect'
+      ? configFromTarget(
+          args.slice(1).filter((a, i, all) => !a.startsWith('--') && !(all[i - 1] ?? '').startsWith('--')),
+          { schema: flag('schema'), port: flag('port') ? Number(flag('port')) : undefined, host: flag('host'), write: flag('write') as never },
+        )
+      : loadConfig(configPath);
+  if (cmd === 'connect') log(`연결: ${config.adapter.type} · 쓰기 ${config.writeMode}${config.writeMode === 'read-only' ? '(바꾸려면 --write low|medium|high)' : ''}`);
   const adapter = await loadAdapter(config.adapter);
-  const llmModel = config.compile?.model ? anthropicDraftModel({ model: config.compile.model }) : undefined;
+  const llmModel = config.compile?.model ? anthropicDraftModel({ model: config.compile.model }) : process.env.ANTHROPIC_API_KEY && cmd === 'connect' ? anthropicDraftModel({}) : undefined;
 
   if (cmd === 'uninstall-feed') {
     // 푸시 관측용으로 설치한 트리거·함수·로그 테이블 제거

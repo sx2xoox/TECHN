@@ -10,6 +10,7 @@
   ],
   "scripts": {
     "demo": "tsx scripts/demo.ts",
+    "isomorph": "tsx packages/server/src/cli.ts",
     "dev:client": "npm run dev -w @isomorph/client",
     "build": "npm run build -w @isomorph/client",
     "test": "vitest run",
