@@ -131,6 +131,10 @@ interface RunOutput {
   totalViolations: number;
 }
 
+/** 한 가설에서 허용하는 최대 배수와, 한 번 실행에서 처리할 최대 사건 수(무엇이 들어와도 서버가 멈추지 않게) */
+export const MAX_FACTOR = 20;
+export const MAX_EVENTS_PER_RUN = 50_000;
+
 function runOnce(base: Snapshot, model: SystemModel, h: Hypothesis, grammar: WorldGrammar, schema: SystemSchema, seed: number, frameMs: number, record: boolean): RunOutput {
   const rnd = mulberry32(seed);
   const t0 = base.ts;
@@ -149,8 +153,9 @@ function runOnce(base: Snapshot, model: SystemModel, h: Hypothesis, grammar: Wor
   const transFactor = new Map<string, number>();
   const atomic = new Set<string>();
   for (const ch of h.changes) {
-    if (ch.kind === 'rate') rateFactor.set(ch.collection, (rateFactor.get(ch.collection) ?? 1) * ch.factor);
-    if (ch.kind === 'transition') transFactor.set(`${ch.collection}.${ch.field}->${ch.to}`, ch.factor);
+    // 같은 컬렉션에 배수를 여러 번 걸어도 곱이 MAX_FACTOR 를 넘지 않는다(20개 × 20배 = 20^20 같은 폭주 방지)
+    if (ch.kind === 'rate') rateFactor.set(ch.collection, Math.min(MAX_FACTOR, (rateFactor.get(ch.collection) ?? 1) * ch.factor));
+    if (ch.kind === 'transition') transFactor.set(`${ch.collection}.${ch.field}->${ch.to}`, Math.min(MAX_FACTOR, ch.factor));
     if (ch.kind === 'atomic') atomic.add(`${ch.target}.${ch.field}`);
     if (ch.kind === 'set') {
       const row = tables.get(ch.collection)?.get(String(ch.pk));
@@ -251,6 +256,7 @@ function runOnce(base: Snapshot, model: SystemModel, h: Hypothesis, grammar: Wor
   };
 
   let nextFrame = 0;
+  let processed = 0;
   for (;;) {
     const e = q.peek();
     const nextAt = e ? e.at : Infinity;
@@ -259,6 +265,7 @@ function runOnce(base: Snapshot, model: SystemModel, h: Hypothesis, grammar: Wor
       nextFrame += frameMs;
     }
     if (!e || e.at > h.horizonMs) break;
+    if (++processed > MAX_EVENTS_PER_RUN) break; // 예산 초과: 여기까지만 굴린다
     q.pop();
     const t = e.at;
     if (e.type === 'arrival') {
@@ -389,21 +396,45 @@ export async function simulateAsync(base: Snapshot, model: SystemModel, h: Hypot
 export function sanitizeHypothesis(input: Hypothesis, schema: SystemSchema): Hypothesis {
   const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, Number.isFinite(x) ? x : lo));
   const cols = new Set(schema.collections.map((c) => c.name));
-  const changes = (input.changes ?? []).slice(0, 20).filter((c) => {
-    const col = 'collection' in c ? c.collection : 'target' in c ? (c as { target: string }).target : '';
+  const fieldsOf = (collection: string) => new Set(schema.collections.find((c) => c.name === collection)?.fields.map((f) => f.name) ?? []);
+  /** 값 고치기는 실제 필드에, 짧은 원시값만 */
+  const cleanPatch = (collection: string, patch: unknown): Record<string, string | number | boolean | null> => {
+    const ok = fieldsOf(collection);
+    const out: Record<string, string | number | boolean | null> = {};
+    for (const [k, v] of Object.entries(patch && typeof patch === 'object' ? patch : {}).slice(0, 20)) {
+      if (!ok.has(k)) continue;
+      if (v === null || typeof v === 'boolean' || (typeof v === 'number' && Number.isFinite(v))) out[k] = v;
+      else if (typeof v === 'string') out[k] = v.slice(0, 200);
+    }
+    return out;
+  };
+  const rateProduct = new Map<string, number>();
+  const changes = (Array.isArray(input.changes) ? input.changes : []).slice(0, 20).filter((c) => {
+    const col = c && 'collection' in c ? c.collection : c && 'target' in c ? (c as { target: string }).target : '';
     return cols.has(col);
-  }).map((c): HypothesisChange => {
+  }).flatMap((c): HypothesisChange[] => {
     switch (c.kind) {
-      case 'rate':
-        return { ...c, factor: clamp(c.factor, 0, 20) };
+      case 'rate': {
+        // 같은 컬렉션의 배수는 하나로 합치고 곱 전체를 0~20 으로 제한
+        const product = clamp((rateProduct.get(c.collection) ?? 1) * clamp(c.factor, 0, MAX_FACTOR), 0, MAX_FACTOR);
+        rateProduct.set(c.collection, product);
+        return [];
+      }
       case 'transition':
-        return { ...c, factor: clamp(c.factor, 0, 20) };
+        return [{ kind: 'transition', collection: c.collection, field: String(c.field).slice(0, 80), to: String(c.to).slice(0, 80), factor: clamp(c.factor, 0, MAX_FACTOR) }];
       case 'burst':
-        return { ...c, count: Math.round(clamp(c.count, 1, 50)), atMs: clamp(c.atMs, 0, 120_000), spreadMs: clamp(c.spreadMs, 0, 10_000) };
+        return [{ kind: 'burst', collection: c.collection, refField: String(c.refField).slice(0, 80), target: typeof c.target === 'number' ? c.target : String(c.target).slice(0, 80), count: Math.round(clamp(c.count, 1, 50)), atMs: clamp(c.atMs, 0, 120_000), spreadMs: clamp(c.spreadMs, 0, 10_000) }];
+      case 'set':
+        return [{ kind: 'set', collection: c.collection, pk: typeof c.pk === 'number' ? c.pk : String(c.pk).slice(0, 80), patch: cleanPatch(c.collection, c.patch) }];
+      case 'setAll':
+        return [{ kind: 'setAll', collection: c.collection, patch: cleanPatch(c.collection, c.patch) }];
+      case 'atomic':
+        return [{ kind: 'atomic', target: c.target, field: String(c.field).slice(0, 80) }];
       default:
-        return c;
+        return [];
     }
   });
+  for (const [collection, factor] of rateProduct) changes.unshift({ kind: 'rate', collection, factor });
   return { id: String(input.id ?? 'custom').slice(0, 80), title: String(input.title ?? '사용자 가설').slice(0, 80), description: String(input.description ?? '').slice(0, 300), horizonMs: clamp(input.horizonMs, 1000, 120_000), changes };
 }
 

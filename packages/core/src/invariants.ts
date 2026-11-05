@@ -1,6 +1,7 @@
 import { buildContextFactory } from './context.ts';
 import { describeExpr, evalExpr, fieldsOfExpr, type Expr } from './expr.ts';
 import { isQuant, type AnomalyKind, type Invariant, type WorldGrammar } from './grammar.ts';
+import { maskRow } from './legend.ts';
 import { project } from './lens.ts';
 import { findCollection, findField, pkOf, type Row, type Snapshot, type SystemSchema } from './schema.ts';
 import type { Violation, WorldState } from './world.ts';
@@ -30,7 +31,8 @@ export function evaluateInvariants(snapshot: Snapshot, grammar: WorldGrammar, sc
         kind: inv.anomaly,
         severity: inv.severity,
         proposed: inv.status === 'proposed',
-        values: pick(row, fields),
+        // 민감 필드(예: 중복된 email)는 위반 기록에서도 가린다
+        values: maskRow(pick(row, fields), col),
       });
     }
   }

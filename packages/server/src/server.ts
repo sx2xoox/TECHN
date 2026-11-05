@@ -4,7 +4,7 @@ import path from 'node:path';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { ClientMessage, ServerMessage, WorldState } from '@isomorph/core';
 import type { IsomorphRuntime } from './runtime.ts';
-import { isLoopback, presentedToken, resolveRole, sameOrigin, sessionCookie, type AuthOptions, type Role } from './auth.ts';
+import { hostHeaderIsLoopback, isLoopback, presentedToken, resolveRole, sameOrigin, sessionCookie, type AuthOptions, type Role } from './auth.ts';
 
 export interface ServeOptions {
   port?: number;
@@ -25,7 +25,12 @@ interface ClientState {
   role: Role;
   /** null 이면 실시간, 숫자면 그 시점을 보고 있음 */
   seekTs: number | null;
+  /** 이 접속에서 시뮬레이션이 돌고 있는가 */
+  simulating?: boolean;
 }
+
+const MAX_CONCURRENT_SIMULATIONS = 2;
+let runningSimulations = 0;
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -58,8 +63,13 @@ export async function serve(runtime: IsomorphRuntime, opts: ServeOptions = {}) {
     throw new Error(`외부 주소(${opts.host})로 세계를 열려면 접근 토큰(token)이 필요합니다. ISOMORPH_TOKEN 을 설정하세요.`);
   }
 
+  const openLocal = !auth.token && !auth.viewerToken;
   const server = http.createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
+    if (openLocal && !hostHeaderIsLoopback(req)) {
+      res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' });
+      return res.end('토큰 없이 연 세계는 localhost·127.0.0.1 주소로만 열 수 있습니다(DNS 리바인딩 방지).');
+    }
     const role = resolveRole(req, auth);
     if (!role) {
       res.writeHead(401, { 'content-type': 'text/plain; charset=utf-8' });
@@ -69,7 +79,8 @@ export async function serve(runtime: IsomorphRuntime, opts: ServeOptions = {}) {
     if (url.searchParams.has('token')) {
       const t = presentedToken(req)!;
       url.searchParams.delete('token');
-      res.writeHead(302, { 'set-cookie': sessionCookie(t), location: `${url.pathname}${url.search}` });
+      // '//evil.com' 같은 경로가 다른 사이트로의 이동이 되지 않게 앞의 슬래시를 하나로 줄인다
+      res.writeHead(302, { 'set-cookie': sessionCookie(t), location: `/${url.pathname.replace(/^\/+/, '')}${url.search}` });
       return res.end();
     }
     if (url.pathname === '/api/hello') {
@@ -91,9 +102,12 @@ export async function serve(runtime: IsomorphRuntime, opts: ServeOptions = {}) {
   });
 
   const wss = new WebSocketServer({
+    // 클라이언트 메시지는 작다(가장 큰 것도 가설 하나): 기본 100MiB 대신 256KiB
+    maxPayload: 256 * 1024,
     server,
     path: '/ws',
     verifyClient: (info, done) => {
+      if (openLocal && !hostHeaderIsLoopback(info.req)) return done(false, 403, 'host not allowed');
       if (!sameOrigin(info.req)) return done(false, 403, 'origin mismatch');
       done(resolveRole(info.req, auth) !== null, 401, 'token required');
     },
@@ -192,8 +206,21 @@ export async function serve(runtime: IsomorphRuntime, opts: ServeOptions = {}) {
             break;
           }
           case 'simulate': {
-            const result = await runtime.simulate(msg.hypothesis, (done, total) => send(c, { type: 'simulation-progress', hypothesisId: msg.hypothesis.id, done, total }));
-            send(c, { type: 'simulation', result });
+            // 시뮬레이션은 계산이 크다: 접속마다 한 번에 하나, 서버 전체로 둘까지
+            if (c.simulating || runningSimulations >= MAX_CONCURRENT_SIMULATIONS) {
+              send(c, { type: 'toast', level: 'warning', message: '다른 시뮬레이션이 돌고 있습니다. 끝난 뒤 다시 시도하세요.' });
+              break;
+            }
+            c.simulating = true;
+            runningSimulations++;
+            try {
+              const id = String(msg.hypothesis?.id ?? '').slice(0, 80);
+              const result = await runtime.simulate(msg.hypothesis, (done, total) => send(c, { type: 'simulation-progress', hypothesisId: id, done, total }));
+              send(c, { type: 'simulation', result });
+            } finally {
+              c.simulating = false;
+              runningSimulations--;
+            }
             break;
           }
         }

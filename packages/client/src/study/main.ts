@@ -32,7 +32,8 @@ interface TrialPayload {
   practice: boolean;
   condition: 'world' | 'table' | 'table+alerts';
   rows: Record<string, Row[]>;
-  world: WorldState;
+  /** 세계 조건에서만(표 조건에는 오지 않는다) */
+  world: WorldState | null;
   alerts?: string[];
   oracle?: { target: string | null; anomaly: string };
 }
@@ -204,23 +205,24 @@ async function runTrial(info: SessionInfo, t: TrialPayload, town: Town, stage: H
   };
   hook.select = (key) => {
     onSelect(key);
-    if (t.condition === 'world') town.select(key ? (t.world.entities.find((e) => `${e.source.collection}:${e.source.pk}` === key)?.id ?? null) : null);
+    if (t.world) town.select(key ? (t.world.entities.find((e) => `${e.source.collection}:${e.source.pk}` === key)?.id ?? null) : null);
   };
   hook.choose = (id) => (root.querySelector<HTMLInputElement>(`input[value="${id}"]`)!.click());
   hook.submit = () => submit.click();
 
   let table: TableView | null = null;
-  if (t.condition === 'world') {
+  const world = t.world;
+  if (t.condition === 'world' && world) {
     main.append(stage);
     stage.classList.remove('hidden');
-    town.setWorld(t.world);
+    town.setWorld(world);
     town.fit();
     worldSelect = (id) => {
-      const e = id ? t.world.entities.find((x) => x.id === id) : null;
+      const e = id ? world.entities.find((x) => x.id === id) : null;
       onSelect(e ? `${e.source.collection}:${e.source.pk}` : null);
     };
     worldHover = (id, x, y) => {
-      const e = id ? t.world.entities.find((w) => w.id === id) : null;
+      const e = id ? world.entities.find((w) => w.id === id) : null;
       if (!e) return tip.classList.add('hidden');
       // 세계 조건의 말풍선은 원본 값만 보여준다(⚠ 문구는 빼서 '표 보기' 와 같은 정보만 준다)
       const row = (t.rows[e.source.collection] ?? []).find((r) => String(r.id) === String(e.source.pk));

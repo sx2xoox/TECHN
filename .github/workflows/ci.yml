@@ -74,15 +74,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: docker build -t isomorph:ci .
-      - name: refuses to listen on 0.0.0.0 without an access token
+      - name: refuses to listen on 0.0.0.0 without access tokens
         run: |
-          if docker run --rm isomorph:ci connect otel --host 0.0.0.0; then echo "should have refused"; exit 1; fi
+          if docker run --rm isomorph:ci connect otel --host 0.0.0.0; then echo "should have refused (no operator token)"; exit 1; fi
+          if docker run --rm -e ISOMORPH_TOKEN=x isomorph:ci connect otel --host 0.0.0.0; then echo "should have refused (no OTLP token)"; exit 1; fi
       - name: OpenTelemetry traces become a world inside the container
         run: |
-          docker run -d --name iso -p 4000:4000 -p 4318:4318 -e ISOMORPH_TOKEN=ci-token isomorph:ci
+          docker run -d --name iso -p 4000:4000 -p 4318:4318 -e ISOMORPH_TOKEN=ci-token -e ISOMORPH_OTLP_TOKEN=otlp-token isomorph:ci
           for i in $(seq 1 60); do curl -sf -H 'authorization: Bearer ci-token' http://127.0.0.1:4000/api/hello | grep -q '"running"' && break; sleep 1; done
           curl -sf -H 'authorization: Bearer ci-token' http://127.0.0.1:4000/api/hello | grep -q '"running"'
-          curl -sf -X POST -H 'content-type: application/json' --data @examples/otel/sample-otlp.json http://127.0.0.1:4318/v1/traces
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' --data @examples/otel/sample-otlp.json http://127.0.0.1:4318/v1/traces)" = "401"
+          curl -sf -X POST -H 'content-type: application/json' -H 'authorization: Bearer otlp-token' --data @examples/otel/sample-otlp.json http://127.0.0.1:4318/v1/traces
           sleep 4
           curl -sf -H 'authorization: Bearer ci-token' http://127.0.0.1:4000/api/world | grep -q '"payments"'
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:4000/api/hello)" = "401"

@@ -49,7 +49,8 @@ export class HttpJsonAdapter implements Adapter {
 
   private async getRows(path: string): Promise<Row[]> {
     const res = await this.fetch(this.url(path), { headers: { accept: 'application/json', ...this.opts.headers } });
-    if (!res.ok) throw new Error(`GET ${path} → ${res.status}`);
+    // 오류 문구에는 경로만(쿼리의 api_key 같은 값은 넣지 않는다)
+    if (!res.ok) throw new Error(`GET ${path.split('?')[0]} → ${res.status}`);
     return rowsOf(await res.json());
   }
 
@@ -74,7 +75,10 @@ export class HttpJsonAdapter implements Adapter {
   private target(cmd: UpdateCommand) {
     const c = this.opts.collections.find((x) => x.name === cmd.collection);
     if (!c?.update) throw new UnsupportedCommandError(`${cmd.collection} 은(는) 쓰기 경로가 설정되지 않았습니다`);
-    return { method: c.update.method ?? 'PATCH', path: c.update.path.replace(':id', encodeURIComponent(String(cmd.pk))), config: c };
+    const id = String(cmd.pk);
+    // encodeURIComponent 는 '.'·'..' 를 그대로 두므로, 그런 id 는 경로를 위로 올라가게 만든다(/items/.. → /)
+    if (id === '' || id === '.' || id === '..') throw new UnsupportedCommandError(`이 id(${JSON.stringify(id)})로는 안전한 쓰기 경로를 만들 수 없습니다`);
+    return { method: c.update.method ?? 'PATCH', path: c.update.path.replace(':id', encodeURIComponent(id)), config: c };
   }
 
   describe(cmd: UpdateCommand): string {
@@ -98,7 +102,8 @@ export class HttpJsonAdapter implements Adapter {
       body: JSON.stringify(cmd.patch),
     });
     if (res.status === 409 || res.status === 412) throw new ConflictError();
-    if (!res.ok) throw new Error(`${t.method} ${t.path} → ${res.status} ${await res.text()}`);
+    // 상대 응답 본문은 짧게만(모든 접속에 보이는 행동 기록에 남기 때문)
+    if (!res.ok) throw new Error(`${t.method} ${t.path.split('?')[0]} → ${res.status} ${(await res.text()).slice(0, 160)}`);
   }
 
   async close() {}

@@ -16,9 +16,24 @@ export interface AuthOptions {
 
 export const COOKIE = 'isomorph_token';
 
+const LOOPBACK_IP = /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
+
+/** 듣는 주소가 이 컴퓨터 안에서만 닿는가. 지정하지 않음(undefined)은 기본값 127.0.0.1 이라 루프백,
+ *  빈 문자열('')은 Node 가 모든 주소(0.0.0.0)로 듣기 때문에 루프백이 아니다. */
 export function isLoopback(host: string | undefined): boolean {
-  if (!host) return true;
-  return host === 'localhost' || host === '::1' || host.startsWith('127.');
+  if (host === undefined) return true;
+  return host === 'localhost' || host === '::1' || LOOPBACK_IP.test(host);
+}
+
+/**
+ * DNS 리바인딩 방지: 토큰 없이(로컬 전용으로) 열었을 때는 요청의 Host 가 로컬 이름이어야 한다.
+ * 공격 사이트(evil.example)가 자기 이름을 127.0.0.1 로 바꿔 가리켜도 Host 는 evil.example 이므로 막힌다.
+ */
+export function hostHeaderIsLoopback(req: http.IncomingMessage): boolean {
+  const host = req.headers.host;
+  if (!host) return false;
+  const name = host.startsWith('[') ? host.slice(1, host.indexOf(']')) : host.replace(/:\d+$/, '');
+  return name === 'localhost' || name === '::1' || LOOPBACK_IP.test(name);
 }
 
 function same(a: string, b: string): boolean {

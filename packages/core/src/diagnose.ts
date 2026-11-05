@@ -41,22 +41,24 @@ function rowTime(row: Row | null, fallback: number, prefer: 'created' | 'updated
   return fallback;
 }
 
-function changed(before: Row | null, after: Row | null): string {
+/** 민감 필드(비밀번호·이메일·토큰 등)는 사건 기록에서도 값을 가린다(바뀌었다는 사실만 남긴다) */
+function changed(before: Row | null, after: Row | null, sensitive: Set<string> = new Set()): string {
   if (!before || !after) return '';
   const parts: string[] = [];
   for (const k of Object.keys(after)) {
     if (TS_FIELD_RE.test(k)) continue;
-    if (JSON.stringify(before[k]) !== JSON.stringify(after[k])) parts.push(`${k}: ${JSON.stringify(before[k])} → ${JSON.stringify(after[k])}`);
+    if (JSON.stringify(before[k]) === JSON.stringify(after[k])) continue;
+    parts.push(sensitive.has(k) ? `${k}: (가림) 바뀜` : `${k}: ${JSON.stringify(before[k])} → ${JSON.stringify(after[k])}`);
   }
   return parts.join(', ');
 }
 
-function brief(row: Row | null): string {
+function brief(row: Row | null, sensitive: Set<string> = new Set()): string {
   if (!row) return '';
   return Object.entries(row)
     .filter(([k]) => !TS_FIELD_RE.test(k))
     .slice(0, 5)
-    .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
+    .map(([k, v]) => `${k}=${sensitive.has(k) ? '(가림)' : JSON.stringify(v)}`)
     .join(' ');
 }
 
@@ -68,6 +70,7 @@ const NO_CTX: EvalContext = { valuesOf: () => new Set(), countOf: () => 0 };
  * 위반 이후의 조치(예: 운영자가 문을 잠근 것)를 원인으로 오인하지 않기 위함.
  */
 export function findCauses(v: Violation, events: ChangeEvent[], schema: SystemSchema, windowMs = 20_000, rowNow?: Row, inv?: Invariant): CauseEvent[] {
+  const sens = (collection: string) => new Set(schema.collections.find((c) => c.name === collection)?.fields.filter((f) => f.sensitive).map((f) => f.name) ?? []);
   const vKey = String(v.pk);
   const selfEvents = events.filter((e) => e.collection === v.collection && String(e.pk) === vKey).sort((a, b) => a.ts - b.ts);
   let onset: number | undefined;
@@ -90,7 +93,7 @@ export function findCauses(v: Violation, events: ChangeEvent[], schema: SystemSc
       collection: e.collection,
       pk: e.pk,
       kind: e.kind,
-      summary: e.kind === 'update' ? changed(e.before, e.after) : e.kind === 'insert' ? `생성 (${brief(e.after)})` : '삭제',
+      summary: e.kind === 'update' ? changed(e.before, e.after, sens(e.collection)) : e.kind === 'insert' ? `생성 (${brief(e.after, sens(e.collection))})` : '삭제',
       relation: 'self',
     });
   }
@@ -110,7 +113,7 @@ export function findCauses(v: Violation, events: ChangeEvent[], schema: SystemSc
         collection: e.collection,
         pk: e.pk,
         kind: e.kind,
-        summary: e.kind === 'insert' ? `생성 (${brief(e.after)})` : e.kind === 'update' ? changed(e.before, e.after) : '삭제',
+        summary: e.kind === 'insert' ? `생성 (${brief(e.after, sens(e.collection))})` : e.kind === 'update' ? changed(e.before, e.after, sens(e.collection)) : '삭제',
         relation: 'referencing',
       });
     }
@@ -125,7 +128,7 @@ export function findCauses(v: Violation, events: ChangeEvent[], schema: SystemSc
         if (!f.ref || row[f.name] === null || row[f.name] === undefined) continue;
         for (const e of events) {
           if (e.collection === f.ref.collection && String(e.pk) === String(row[f.name]) && e.kind === 'delete') {
-            out.push({ ts: e.ts, at: e.ts, collection: e.collection, pk: e.pk, kind: 'delete', summary: `참조 대상 삭제됨 (${brief(e.before)})`, relation: 'referenced' });
+            out.push({ ts: e.ts, at: e.ts, collection: e.collection, pk: e.pk, kind: 'delete', summary: `참조 대상 삭제됨 (${brief(e.before, sens(e.collection))})`, relation: 'referenced' });
           }
         }
       }

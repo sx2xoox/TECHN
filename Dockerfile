@@ -1,7 +1,7 @@
 # ISOMORPH 컨테이너
 #   docker build -t isomorph .
 #   docker run --rm -p 4000:4000 -e ISOMORPH_TOKEN=<운영자 토큰> isomorph connect postgres://user:pass@db:5432/app --host 0.0.0.0
-#   docker run --rm -p 4000:4000 -p 4318:4318 -e ISOMORPH_TOKEN=<토큰> isomorph            (기본: OpenTelemetry 수신)
+#   docker run --rm -p 4000:4000 -p 4318:4318 -e ISOMORPH_TOKEN=<토큰> -e ISOMORPH_OTLP_TOKEN=<수신 토큰> isomorph   (기본: OpenTelemetry 수신)
 # 컨테이너 밖에서 보려면 0.0.0.0 으로 들어야 하고, 그러면 접근 토큰이 필수다(없으면 시작을 거부한다).
 
 FROM node:22-bookworm-slim AS build

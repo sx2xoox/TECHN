@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'node:crypto';
 import http from 'node:http';
 import { markSensitive, type Row, type Snapshot, type SystemSchema, type UpdateCommand } from '@isomorph/core';
 import { UnsupportedCommandError, type Adapter } from './types.ts';
@@ -19,7 +20,16 @@ export interface OtelAdapterOptions {
   maxSpans?: number;
   /** 분당 호출·오류·평균 지연을 셀 시간 창 */
   windowMs?: number;
+  /**
+   * 수신 토큰: 보내는 쪽이 `authorization: Bearer <토큰>` 을 실어야 받는다(OTEL_EXPORTER_OTLP_HEADERS).
+   * 바깥 주소(0.0.0.0 등)로 들을 때는 필수다. 운영자 토큰과는 다른 값을 쓰자(계측된 앱이 세계를 조작할 권한을 갖지 않게).
+   */
+  token?: string;
+  /** 기억할 서비스 수 상한 */
+  maxServices?: number;
 }
+
+const LOOPBACK = /^(localhost|::1|127\.\d{1,3}\.\d{1,3}\.\d{1,3})$/;
 
 interface SpanRec {
   id: string;
@@ -78,12 +88,23 @@ export class OtelAdapter implements Adapter {
 
   async connect() {
     if (this.server) return;
+    const host = this.opts.host ?? '127.0.0.1';
+    if (!LOOPBACK.test(host) && !this.opts.token) throw new Error(`OTLP 수신기를 바깥 주소(${host})로 열려면 수신 토큰이 필요합니다(ISOMORPH_OTLP_TOKEN).`);
+    const expected = this.opts.token ? Buffer.from(`Bearer ${this.opts.token}`) : null;
     this.server = http.createServer((req, res) => {
       if (req.method !== 'POST' || !req.url?.startsWith('/v1/traces')) {
         res.writeHead(404).end();
         return;
       }
-      if (!String(req.headers['content-type'] ?? '').includes('json')) {
+      if (expected) {
+        const got = Buffer.from(String(req.headers.authorization ?? ''));
+        if (got.length !== expected.length || !timingSafeEqual(got, expected)) {
+          res.writeHead(401, { 'content-type': 'application/json' }).end(JSON.stringify({ error: '수신 토큰이 필요합니다' }));
+          return;
+        }
+      }
+      // 정확히 application/json 만: 'text/plain;x=json' 같은 값은 다른 사이트의 '단순 요청' 으로 보낼 수 있어 거절한다
+      if (String(req.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase() !== 'application/json') {
         res.writeHead(415, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'OTLP JSON 만 받습니다(OTEL_EXPORTER_OTLP_PROTOCOL=http/json)' }));
         return;
       }
@@ -134,6 +155,9 @@ export class OtelAdapter implements Adapter {
         }
       }
     }
+    // 서비스도 무한히 늘지 않게: 오래 소식이 없는 서비스부터 지운다
+    const maxServices = this.opts.maxServices ?? 200;
+    if (this.services.size > maxServices) for (const [name] of [...this.services.entries()].sort((a, b) => a[1] - b[1]).slice(0, this.services.size - maxServices)) this.services.delete(name);
     // 최근 것만 남긴다
     if (this.spans.size > max) for (const id of [...this.spans.values()].sort((a, b) => a.end - b.end).slice(0, this.spans.size - max).map((x) => x.id)) this.spans.delete(id);
     if (this.owner.size > max * 20) for (const id of [...this.owner.keys()].slice(0, this.owner.size - max * 20)) this.owner.delete(id);

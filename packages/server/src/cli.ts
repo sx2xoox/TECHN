@@ -85,6 +85,8 @@ async function main() {
     return;
   }
 
+  // OTLP 수신기는 설정이 위험하면(바깥 주소인데 수신 토큰 없음) 재시도하지 말고 바로 멈춘다
+  if (config.adapter.type === 'otel') await adapter.connect();
   const runtime = new IsomorphRuntime({
     adapter,
     grammar: config.grammarPath && fs.existsSync(config.grammarPath) ? loadGrammar(config.grammarPath) : undefined,

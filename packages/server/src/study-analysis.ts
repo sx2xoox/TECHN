@@ -271,7 +271,9 @@ export function studyCsv(records: StudyRecord[], f: StudyFilter = {}): string {
   const sessions = new Map(records.filter((r): r is SessionRecord => r.type === 'session').map((s) => [s.participant, s]));
   const cols = ['participant', 'group', 'dashboards', 'pilot', 'order', 'condition', 'anomaly', 'locateCorrect', 'diagnoseCorrect', 'timeMs', 'gaveUp', 'timedOut'];
   const esc = (v: unknown) => {
-    const s = v === null || v === undefined ? '' : String(v);
+    let s = v === null || v === undefined ? '' : String(v);
+    // 스프레드시트 수식 주입 방지: =,+,-,@ 로 시작하는 글자 값은 작은따옴표로 시작하게(숫자는 그대로)
+    if (typeof v === 'string' && /^[=+\-@\t\r]/.test(s)) s = `'${s}`;
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   const rows = records

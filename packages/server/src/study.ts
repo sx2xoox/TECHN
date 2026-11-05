@@ -11,6 +11,7 @@ import { makeTrial, planTrials, STUDY_ANOMALIES, STUDY_CHOICES, STUDY_RULES, stu
  * 사용자 실험 서버: "비개발자가 대시보드(표)보다 이 세계에서 규칙 위반을 더 빨리·정확히 찾는가"
  *  - 참가자 안 비교(within-subject): 모든 참가자가 모든 조건을 겪고, 조건 순서와 과제 배정을 돌려 맞춘다.
  *  - 정답은 서버에만 있다. 클라이언트는 고른 것과 시간만 보내고, 채점은 서버가 한다.
+ *    (세계 조건은 이상 현상을 그리기 위해 개체별 모습을 받는다 — 그것을 보여주는 것이 그 조건의 처치다.)
  *  - 기록: dataDir/<세션>.jsonl (한 줄 = 한 사건). 이름·연락처는 받지 않는다.
  */
 
@@ -45,8 +46,14 @@ interface Session {
   createdAt: number;
   trials: StudyTrial[];
   answered: Set<number>;
+  /** 이미 답한 설문(조건마다 한 번, 마지막 설문 한 번) */
+  surveyed: Set<string>;
   file: string;
 }
+
+/** 동시에 진행 중인 세션 수와 한 세션의 수명(참가 코드 하나를 여럿이 써도 메모리가 무한히 늘지 않게) */
+const MAX_LIVE_SESSIONS = 50;
+const SESSION_TTL_MS = 2 * 60 * 60 * 1000;
 
 export interface TrialPayload {
   key: number;
@@ -55,7 +62,7 @@ export interface TrialPayload {
   practice: boolean;
   condition: StudyCondition;
   rows: StudyTrial['snapshot']['collections'];
-  world: StudyTrial['world'];
+  world: StudyTrial['world'] | null;
   /** table+alerts 조건에서만: 규칙을 어긴 행 */
   alerts?: string[];
   oracle?: { target: string | null; anomaly: StudyAnomaly };
@@ -99,7 +106,10 @@ export async function startStudyServer(opts: StudyOptions) {
     return true;
   };
 
-  function createSession(): Session {
+  function createSession(): Session | null {
+    const now = Date.now();
+    for (const [sid, x] of sessions) if (now - x.createdAt > SESSION_TTL_MS) sessions.delete(sid);
+    if (sessions.size >= MAX_LIVE_SESSIONS) return null;
     const id = randomUUID();
     const participant = nextParticipant();
     const trials: StudyTrial[] = [];
@@ -116,7 +126,7 @@ export async function startStudyServer(opts: StudyOptions) {
         key++;
       });
     }
-    const s: Session = { id, participant, createdAt: Date.now(), trials, answered: new Set(), file: path.join(opts.dataDir, `${new Date().toISOString().slice(0, 10)}-p${String(participant).padStart(3, '0')}-${id.slice(0, 8)}.jsonl`) };
+    const s: Session = { id, participant, createdAt: Date.now(), trials, answered: new Set(), surveyed: new Set(), file: path.join(opts.dataDir, `${new Date().toISOString().slice(0, 10)}-p${String(participant).padStart(3, '0')}-${id.slice(0, 8)}.jsonl`) };
     sessions.set(id, s);
     return s;
   }
@@ -133,26 +143,39 @@ export async function startStudyServer(opts: StudyOptions) {
       practice: t.practice,
       condition,
       rows: t.snapshot.collections,
-      world: t.world,
+      // 세계 조건만 세계를 받는다. 위반 목록(정답이 적힌 것)은 빼고, 그림에 필요한 개체별 이상 현상만 남긴다.
+      // (세계 조건은 그 이상 현상을 '그려 보여주는 것' 자체가 실험 처치다. 표 조건에는 세계를 보내지 않는다.)
+      world: condition === 'world' ? { ...t.world, violations: [] } : null,
       ...(condition === 'table+alerts' ? { alerts: [...new Set(t.world.violations.map((v) => `${v.collection}:${v.pk}`))] } : {}),
       ...(opts.exposeAnswers ? { oracle: { target: t.target, anomaly: t.anomaly } } : {}),
     };
   };
 
+  /** 요청 본문: 64KiB 를 넘으면 연결을 끊고 더 읽지 않는다(실험 화면이 보내는 것은 아주 작다) */
+  const MAX_BODY = 64 * 1024;
   const readBody = (req: http.IncomingMessage) =>
     new Promise<Record<string, unknown>>((resolve, reject) => {
       let data = '';
+      let over = false;
       req.on('data', (c) => {
+        if (over) return;
         data += c;
-        if (data.length > 1_000_000) reject(new Error('too large'));
+        if (data.length > MAX_BODY) {
+          over = true;
+          data = '';
+          reject(new Error('요청이 너무 큽니다'));
+          req.destroy();
+        }
       });
       req.on('end', () => {
+        if (over) return;
         try {
           resolve(data ? (JSON.parse(data) as Record<string, unknown>) : {});
         } catch (e) {
           reject(e);
         }
       });
+      req.on('error', reject);
     });
 
   const json = (res: http.ServerResponse, code: number, body: unknown) => {
@@ -174,6 +197,7 @@ export async function startStudyServer(opts: StudyOptions) {
         const body = await readBody(req);
         if (opts.accessCode && !sameSecret(String(body.code ?? ''), opts.accessCode)) return json(res, 403, { error: '참가 코드가 맞지 않습니다' });
         const s = createSession();
+        if (!s) return json(res, 503, { error: '진행 중인 참가자가 너무 많습니다. 잠시 뒤 다시 시도하세요.' });
         record(s, {
           type: 'session',
           pilot: !!body.pilot,
@@ -181,7 +205,7 @@ export async function startStudyServer(opts: StudyOptions) {
           perCondition,
           practice,
           timeLimitMs,
-          background: { developer: String(body.developer ?? ''), dashboards: Number(body.dashboards ?? 0), ageBand: String(body.ageBand ?? '') },
+          background: { developer: String(body.developer ?? '').slice(0, 20), dashboards: Math.max(0, Math.min(5, Math.round(Number(body.dashboards) || 0))), ageBand: String(body.ageBand ?? '').slice(0, 20) },
           userAgent: String(req.headers['user-agent'] ?? '').slice(0, 200),
         });
         log(`참가자 ${s.participant} 시작 (${s.file})`);
@@ -248,9 +272,12 @@ export async function startStudyServer(opts: StudyOptions) {
       if (req.method === 'POST' && url.pathname === '/api/study/questionnaire') {
         const b = body;
         const clamp = (x: unknown) => Math.max(1, Math.min(7, Math.round(Number(x) || 0))) || null;
+        const surveyKey = b.final ? 'final' : String(b.condition ?? '').slice(0, 20);
+        if (s!.surveyed.has(surveyKey)) return json(res, 409, { error: '이미 답한 설문입니다' });
+        s!.surveyed.add(surveyKey);
         record(s!, {
           type: 'questionnaire',
-          condition: String(b.condition ?? ''),
+          condition: surveyKey,
           effort: clamp(b.effort),
           confidence: clamp(b.confidence),
           ...(b.final ? { final: true, preference: String(b.preference ?? '').slice(0, 20), comment: String(b.comment ?? '').slice(0, 2000) } : {}),

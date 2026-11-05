@@ -49,6 +49,17 @@ import { compile, type CompileOptions, type CompileRound } from '@isomorph/compi
 import { ConflictError, type Adapter } from '@isomorph/adapters';
 import { EventStore } from './eventstore.ts';
 
+/**
+ * 화면(모든 접속)에 나가는 오류 문구에서 비밀을 지운다: URL 의 사용자·비밀번호, 쿼리 문자열(api_key 등).
+ * 자세한 원문은 서버 로그(운영자 컴퓨터)에만 남긴다.
+ */
+export function redact(message: string): string {
+  return message
+    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@/gi, '$1***@')
+    .replace(/(https?:\/\/[^\s?#'"]+)\?[^\s#'"]*/gi, '$1?…')
+    .slice(0, 300);
+}
+
 export interface RuntimeOptions {
   adapter: Adapter;
   /** 미리 만들어 둔 문법(없으면 컴파일) */
@@ -155,7 +166,8 @@ export class IsomorphRuntime extends EventEmitter {
       return this.status;
     } catch (e) {
       this.status = 'error';
-      this.error = e instanceof Error ? e.message : String(e);
+      this.log(`시작 실패: ${e instanceof Error ? e.message : e}`);
+      this.error = redact(e instanceof Error ? e.message : String(e));
       this.log(`시작 실패: ${this.error}`);
       this.emit('status', this.status);
       return this.status;
@@ -225,7 +237,7 @@ export class IsomorphRuntime extends EventEmitter {
       return this.world;
     } catch (e) {
       this.log(`관측 실패: ${e instanceof Error ? e.message : e}`);
-      this.emit('toast', { level: 'error', message: `시스템 관측 실패: ${e instanceof Error ? e.message : e}` });
+      this.emit('toast', { level: 'error', message: `시스템 관측 실패: ${redact(e instanceof Error ? e.message : String(e))}` });
       return this.world;
     }
   }
@@ -430,7 +442,7 @@ export class IsomorphRuntime extends EventEmitter {
     try {
       commandText = plan.commands.map((c) => this.adapter.describe(c));
     } catch (e) {
-      return { ...base, current, error: e instanceof Error ? e.message : String(e) };
+      return { ...base, current, error: redact(e instanceof Error ? e.message : String(e)) };
     }
     const future = applyCommands(snap, plan.commands, this.schema);
     const preview = observe(future, this.grammar, this.schema).entities.find((e) => e.id === entityIdValue) ?? null;
@@ -472,7 +484,7 @@ export class IsomorphRuntime extends EventEmitter {
         record.error = '동시 변경을 감지해 최신 상태 기준으로 다시 계획한 뒤 실행했습니다';
       } else {
         record.status = 'failed';
-        record.error = e instanceof Error ? e.message : String(e);
+        record.error = redact(e instanceof Error ? e.message : String(e));
         this.actions.unshift(record);
         this.emit('actions', this.actions);
         return record;
@@ -520,7 +532,7 @@ export class IsomorphRuntime extends EventEmitter {
       this.pending.push({ actionId: record.id, commands, executedAt: Date.now() });
     } catch (e) {
       record.status = 'failed';
-      record.error = e instanceof ConflictError ? '그 사이 값이 바뀌어 안전하게 되돌릴 수 없습니다' : e instanceof Error ? e.message : String(e);
+      record.error = e instanceof ConflictError ? '그 사이 값이 바뀌어 안전하게 되돌릴 수 없습니다' : redact(e instanceof Error ? e.message : String(e));
     }
     this.actions.unshift(record);
     this.emit('actions', this.actions);

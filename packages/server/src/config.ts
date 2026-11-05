@@ -72,7 +72,7 @@ export function configFromTarget(targets: string[], opts: { schema?: string; por
     };
   } else if (target === 'otel') {
     // 수신기도 같은 주소에서 듣는다(컨테이너에서는 0.0.0.0)
-    adapter = { type: 'otel', port: 4318, ...(opts.host ? { host: opts.host } : {}) };
+    adapter = { type: 'otel', port: 4318, ...(opts.host ? { host: opts.host } : {}), ...(process.env.ISOMORPH_OTLP_TOKEN ? { token: process.env.ISOMORPH_OTLP_TOKEN } : {}) };
   } else if (target === 'docker') {
     adapter = { type: 'docker' };
   } else {

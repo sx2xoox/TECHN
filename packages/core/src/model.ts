@@ -1,4 +1,5 @@
 import type { ChangeEvent } from './diff.ts';
+import { maskRow } from './legend.ts';
 import { findCollection, pkOf, type CollectionSchema, type Pk, type Row, type Snapshot, type SystemSchema } from './schema.ts';
 
 /**
@@ -210,7 +211,8 @@ export function learnModel(initial: Snapshot, events: ChangeEvent[], schema: Sys
       if (total) targets[f.name] = Object.fromEntries(Object.entries(counts).map(([k, v]) => [k, v / total]));
     }
     const perMinute = (recs.length / spanMs) * 60_000;
-    rates.push({ collection: c.name, perMinute, samples: recs.length, targets, template: recs[recs.length - 1].row });
+    // 본뜰 행(template)은 클라이언트로도 가므로 민감 필드를 가린다(시뮬레이션에는 실제 값이 필요 없다)
+    rates.push({ collection: c.name, perMinute, samples: recs.length, targets, template: maskRow(recs[recs.length - 1].row, c) });
     rules.push(`${c.name}: 분당 약 ${perMinute.toFixed(1)}건 새로 생김 (관측 ${recs.length}건${bursts ? `, 동시 폭주 ${bursts}건은 평소 흐름에서 제외` : ''})`);
   }
 
