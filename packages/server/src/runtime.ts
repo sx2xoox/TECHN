@@ -29,6 +29,7 @@ import {
   type SimulationResult,
   type SystemModel,
   type ActionRecord,
+  type Affordance,
   type AffordanceOption,
   type AssetManifest,
   type DryRunMessage,
@@ -85,7 +86,13 @@ interface Plan {
   preview: WorldEntity | null;
   expires: number;
   undoOf?: string;
+  risk: Affordance['risk'];
+  /** 상대 편집(delta)이면 충돌 때 최신 상태로 다시 계획할 수 있다 */
+  relative: boolean;
 }
+
+/** 직전 변경 되돌리기의 드라이런 id(문법의 행동 id 와 겹치지 않는다) */
+export const REVERT_ACTION = '__revert';
 
 interface PendingVerification {
   actionId: string;
@@ -413,6 +420,7 @@ export class IsomorphRuntime extends EventEmitter {
 
   /** 드라이런: 아무것도 바꾸지 않고, 바뀔 미래의 장면을 계산한다. */
   dryRun(entityIdValue: string, affordanceId: string): DryRunMessage {
+    if (affordanceId === REVERT_ACTION) return this.dryRunRevert(entityIdValue);
     const aff = this.grammar.affordances.find((a) => a.id === affordanceId);
     const base: DryRunMessage = { type: 'dryrun', planId: null, entityId: entityIdValue, affordanceId, title: aff?.title ?? affordanceId, commands: [], commandText: [], current: null, preview: null, risk: aff?.risk ?? 'high', allowed: false };
     const snap = this.lastSnapshot;
@@ -431,8 +439,45 @@ export class IsomorphRuntime extends EventEmitter {
     const allowed = riskAllowed(this.writeMode, aff.risk) && plan.commands.length > 0;
     const reason = !riskAllowed(this.writeMode, aff.risk) ? `쓰기 권한(${this.writeMode})으로는 위험도 ${aff.risk} 행동을 실행할 수 없습니다` : plan.commands.length === 0 ? '세계가 이미 그 상태입니다(바꿀 것이 없음)' : undefined;
     const id = randomUUID();
-    if (allowed) this.plans.set(id, { id, entityId: entityIdValue, affordanceId, title: aff.title, commands: plan.commands, commandText, preview, expires: Date.now() + 60_000 });
+    if (allowed) this.plans.set(id, { id, entityId: entityIdValue, affordanceId, title: aff.title, commands: plan.commands, commandText, preview, expires: Date.now() + 60_000, risk: aff.risk, relative: aff.edits.every((ed) => ed.delta !== undefined) });
     return { ...base, planId: allowed ? id : null, commands: plan.commands, commandText, current, preview, allowed, ...(reason ? { reason } : {}) };
+  }
+
+  /**
+   * 직전 변경 되돌리기: 위반 직전에 이 행이 받은 변경을 원래 값으로(살펴보기의 revert 안 그대로).
+   * 위험도는 high: 시스템 설정을 과거 값으로 되돌리는 일이라 가장 넓은 쓰기 권한에서만 연다.
+   */
+  private dryRunRevert(entityIdValue: string): DryRunMessage {
+    const base: DryRunMessage = { type: 'dryrun', planId: null, entityId: entityIdValue, affordanceId: REVERT_ACTION, title: '직전 변경 되돌리기', commands: [], commandText: [], current: null, preview: null, risk: 'high', allowed: false };
+    const snap = this.lastSnapshot;
+    const parsed = parseEntityId(entityIdValue);
+    const kind = parsed && this.grammar ? kindById(this.grammar, parsed.kind) : undefined;
+    const col = kind && findCollection(this.schema, kind.collection);
+    if (!snap || !parsed || !kind || !col) return { ...base, error: '개체를 찾을 수 없습니다' };
+    const world = observe(snap, this.grammar, this.schema);
+    const current = world.entities.find((e) => e.id === entityIdValue) ?? null;
+    const row = (snap.collections[kind.collection] ?? []).find((r) => String(pkOf(r, col)) === parsed.pk);
+    const r = row ? this.inspect(entityIdValue).revert : undefined;
+    if (!row || !r) return { ...base, current, error: '되돌릴 직전 변경이 없습니다(위반 전에 바뀐, 시스템이 쓰기를 받는 값이 없음)' };
+    const cmd: UpdateCommand = {
+      op: 'update',
+      collection: kind.collection,
+      pk: pkOf(row, col),
+      patch: Object.fromEntries(r.changes.map((c) => [c.field, c.to])),
+      before: Object.fromEntries(r.changes.map((c) => [c.field, c.now])),
+    };
+    let commandText: string[];
+    try {
+      commandText = [this.adapter.describe(cmd)];
+    } catch (e) {
+      return { ...base, current, error: redact(e instanceof Error ? e.message : String(e)) };
+    }
+    const preview = observe(applyCommands(snap, [cmd], this.schema), this.grammar, this.schema).entities.find((e) => e.id === entityIdValue) ?? null;
+    const title = `직전 변경 되돌리기: ${r.changes.map((c) => c.field).join(', ')}`;
+    const allowed = riskAllowed(this.writeMode, 'high');
+    const id = randomUUID();
+    if (allowed) this.plans.set(id, { id, entityId: entityIdValue, affordanceId: REVERT_ACTION, title, commands: [cmd], commandText, preview, expires: Date.now() + 60_000, risk: 'high', relative: false });
+    return { ...base, title, planId: allowed ? id : null, commands: [cmd], commandText, current, preview, allowed, ...(allowed ? {} : { reason: `쓰기 권한(${this.writeMode})으로는 위험도 high 행동을 실행할 수 없습니다(--write high)` }) };
   }
 
   cancel(planId: string) {
@@ -449,14 +494,12 @@ export class IsomorphRuntime extends EventEmitter {
     this.plans.delete(planId);
     if (!plan) throw new Error('미리보기가 만료됐거나 존재하지 않습니다. 다시 미리보기 하세요.');
     if (plan.expires < Date.now()) throw new Error('미리보기가 만료됐습니다(60초). 다시 미리보기 하세요.');
-    const aff = this.grammar.affordances.find((a) => a.id === plan.affordanceId)!;
-    if (!riskAllowed(this.writeMode, aff.risk)) throw new Error('쓰기 권한이 없습니다');
+    if (!riskAllowed(this.writeMode, plan.risk)) throw new Error('쓰기 권한이 없습니다');
     const record: ActionRecord = { id: randomUUID(), ts: Date.now(), title: plan.title, entityId: plan.entityId, affordanceId: plan.affordanceId, commands: plan.commands, commandText: plan.commandText, status: 'applied', ...(plan.undoOf ? { undoOf: plan.undoOf } : {}) };
     try {
       await this.executeAll(plan.commands);
     } catch (e) {
-      const relative = aff.edits.every((ed) => ed.delta !== undefined);
-      if (e instanceof ConflictError && relative) {
+      if (e instanceof ConflictError && plan.relative) {
         await this.refresh();
         const again = planAffordance(this.lastSnapshot!, this.grammar, this.schema, plan.entityId, plan.affordanceId);
         if (!again.ok) throw new Error(again.error);

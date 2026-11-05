@@ -24,7 +24,7 @@ export interface CauseEvent {
 }
 
 export interface Diagnosis {
-  pattern: 'race' | 'sudden-change' | 'dangling-ref' | 'duplicate' | 'time-order' | 'mismatch' | 'linked' | 'unknown';
+  pattern: 'race' | 'sudden-change' | 'dangling-ref' | 'duplicate' | 'time-order' | 'mismatch' | 'linked' | 'after-change' | 'unknown';
   title: string;
   detail: string;
   confidence: 'high' | 'medium' | 'low';

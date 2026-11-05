@@ -1,6 +1,7 @@
 import * as fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import {
+  findRevert,
   applyCommands,
   applyEvents,
   buildLegend,
@@ -231,6 +232,40 @@ describe('event log', () => {
 });
 
 describe('colour-blind accessibility', () => {
+  it('finds the change that preceded a violation, and only offers to revert what is safe to revert', () => {
+    const schema = {
+      system: 'k',
+      source: 'custom' as const,
+      constraints: [],
+      collections: [
+        {
+          name: 'deployments',
+          primaryKey: 'id',
+          fields: [
+            { name: 'id', type: 'string' as const, nullable: false },
+            { name: 'replicas', type: 'integer' as const, nullable: false },
+            { name: 'ready', type: 'integer' as const, nullable: false },
+            { name: 'image', type: 'string' as const, nullable: true },
+            { name: 'note', type: 'string' as const, nullable: true, readOnly: true },
+          ],
+        },
+      ],
+    };
+    const inv = { id: 'r', collection: 'deployments', title: '준비 ≥ 원함', expr: { op: 'cmpField' as const, field: 'ready', cmp: '>=' as const, other: 'replicas' }, anomaly: 'glitch' as const, source: 'schema' as const, status: 'confirmed' as const, severity: 'warning' as const };
+    const v = { invariantId: 'r', collection: 'deployments', pk: 'web', title: 't', kind: 'glitch', severity: 'warning', proposed: false, values: {} } as never;
+    const row0 = { id: 'web', replicas: 2, ready: 2, image: 'app:1', note: 'a' };
+    const row1 = { ...row0, image: 'app:2', note: 'b' }; // 배포(이미지 바뀜) — 아직 법칙은 지켜진다
+    const row2 = { ...row1, ready: 0 }; // 그 뒤 파드가 준비를 잃음 → 위반 시작
+    const ev = [
+      { ts: 1000, collection: 'deployments', pk: 'web', kind: 'update' as const, before: row0, after: row1 },
+      { ts: 2000, collection: 'deployments', pk: 'web', kind: 'update' as const, before: row1, after: row2 },
+    ];
+    expect(findRevert(v, ev, schema, inv, row2)).toEqual({ at: 1000, changes: [{ field: 'image', now: 'app:2', to: 'app:1' }] }); // 읽기 전용(note)과 법칙의 필드는 빼고
+    expect(findRevert(v, ev, schema, inv, { ...row2, image: 'app:3' })).toBeNull(); // 그 뒤로 다시 바뀌었으면 덮어쓰지 않는다
+    expect(findRevert(v, [ev[1]], { ...schema }, inv, row2)).toBeNull(); // 위반 전의 변경이 관측되지 않았으면 안을 내지 않는다
+    expect(findRevert(v, ev.map((e) => ({ ...e, ts: e.ts + (e.ts === 1000 ? -60 * 60_000 : 0) })), schema, inv, row2)).toBeNull(); // 너무 오래된 변경은 원인으로 보지 않는다
+  });
+
   it('tells a timestamp order problem from a gap between two quantities', () => {
     const inv = (field: string, other: string) => ({ id: 'x', collection: 'c', title: 't', expr: { op: 'cmpField' as const, field, cmp: '>=' as const, other }, anomaly: 'glitch' as const, source: 'schema' as const, status: 'confirmed' as const, severity: 'warning' as const });
     const v = (values: Record<string, unknown>) => ({ invariantId: 'x', collection: 'c', pk: 1, kind: 'glitch', severity: 'warning', title: 't', values }) as never;

@@ -39,7 +39,7 @@ describe.skipIf(!KUBECONFIG || !BACKEND)('one world: a real cluster and the serv
     const first = await app.hit(8);
     expect(first.failed).toBe(0); // 파드가 살아 있으면 호출은 성공한다
     traffic = setInterval(() => void app.hit(2, 2).catch(() => {}), 500);
-    rt = new IsomorphRuntime({ adapter: new CompositeAdapter({ parts: [{ name: 'k8s', adapter: k8s }, { name: 'otel', adapter: otel }] }), pollMs: 2000, numRuns: 40, compile: { mode: 'heuristic' } });
+    rt = new IsomorphRuntime({ adapter: new CompositeAdapter({ parts: [{ name: 'k8s', adapter: k8s }, { name: 'otel', adapter: otel }] }), writeMode: 'high', pollMs: 2000, numRuns: 40, compile: { mode: 'heuristic' } });
     expect(await rt.start()).toBe('running');
   }, 60_000);
 
@@ -86,4 +86,22 @@ describe.skipIf(!KUBECONFIG || !BACKEND)('one world: a real cluster and the serv
       ['k8s_deployments', 'default/payments', 'linked'],
     ]);
   }, 300_000);
+
+  it('fixes it at the root: revert the bad image → the real pods come back → payments and web recover', async () => {
+    const dep = 'k8s_deployments:default/payments';
+    const ins = rt.inspect(dep);
+    expect(ins.diagnosis!.pattern).toBe('after-change');
+    expect(ins.revert!.changes).toEqual([{ field: 'image', now: 'registry.invalid/isomorph/gone:1', to: 'nginx:1.27-alpine' }]);
+    const dr = rt.dryRun(dep, '__revert');
+    expect(dr.allowed).toBe(true);
+    expect(dr.commandText).toEqual(['[k8s] kubectl set image deployment/payments -n default nginx=nginx:1.27-alpine']);
+    const rec = await rt.approve(dr.planId!);
+    expect(rec.status).toBe('applied');
+    await until(async () => (await rt.refresh(), viol('k8s_deployments', 'default/payments').length === 0), 180_000, '디플로이먼트 회복(파드 준비)');
+    expect(rt.getActions().find((a) => a.id === rec.id)!.status).toBe('verified');
+    const ok = await app.hit(6);
+    expect(ok.failed).toBe(0); // 호출이 실제로 다시 성공한다
+    // 서비스는 최근 1분의 오류 비율이 내려가면 회복한다
+    await until(async () => (await rt.refresh(), viol('otel_services', 'payments').length === 0 && viol('otel_services', 'web').length === 0), 120_000, 'payments·web 서비스 회복');
+  }, 360_000);
 });

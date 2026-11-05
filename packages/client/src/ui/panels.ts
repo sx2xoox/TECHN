@@ -290,6 +290,17 @@ export class Inspector {
           ),
         )));
     }
+    // 직전 변경 되돌리기: 위반 직전에 이 개체가 받은 변경(시스템이 쓰기를 받는 값만)
+    if (m.revert && !history) {
+      const r = m.revert;
+      this.el.append(this.stable('revert', JSON.stringify([m.entityId, r]), () =>
+        h('div', { class: 'revert' },
+          h('h3', null, '위반 직전의 변경 ', h('span', { class: 'muted small' }, `(${new Date(r.at).toLocaleTimeString('ko-KR')})`)),
+          h('ul', null, r.changes.map((c) => h('li', { class: 'mono small' }, `${c.field}: `, h('span', { class: 'bad' }, valueText(c.now)), ' ← 원래 ', h('strong', null, valueText(c.to))))),
+          h('button', { class: 'btn act risk-high', onclick: () => this.hnd.onAffordance(m.entityId, '__revert') }, '이 변경 되돌리기(미리보기)'),
+          h('p', { class: 'muted small' }, '드라이런으로 실제 명령을 먼저 보여 주고, 승인해야만 실행합니다. 실행 뒤에는 관측으로 확인하고, 다시 되돌릴 수 있습니다.'),
+        )));
+    }
     if (m.causes.length) {
       const t0 = m.causes[0].at;
       this.el.append(

@@ -17,3 +17,4 @@ export * from './color.ts';
 export * from './glyph.ts';
 export * from './infer-refs.ts';
 export * from './inspect.ts';
+export * from './revert.ts';

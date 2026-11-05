@@ -29,18 +29,17 @@ function assert(cond: unknown, msg: string): asserts cond {
 
 const kube = await startFakeKube();
 kube.addDeployment('payments', 'shop', 2);
+// payments 가 실제로 부르는 뒷단: 클러스터의 payments 파드가 하나라도 준비돼 있어야 응답한다(실패를 꾸미지 않는다)
+const backend = http.createServer((_req, res) => res.writeHead(kube.readyOf('shop/payments') > 0 ? 200 : 503).end());
+await new Promise<void>((r) => backend.listen(0, '127.0.0.1', () => r()));
 const otel = new OtelAdapter({ port: 0 });
 await otel.connect();
-const healthy = await startTwoServices({ endpoint: otel.endpoint, failRate: 0.02 });
-let failing: Awaited<ReturnType<typeof startTwoServices>> | null = null;
-const traffic = setInterval(() => {
-  void healthy.hit(2, 2);
-  if (failing) void failing.hit(3, 3);
-}, 400);
-await healthy.hit(6);
+const app = await startTwoServices({ endpoint: otel.endpoint, paymentsBackend: `http://127.0.0.1:${(backend.address() as { port: number }).port}/` });
+const traffic = setInterval(() => void app.hit(3, 3), 400);
+await app.hit(6);
 const rt = new IsomorphRuntime({
   adapter: new CompositeAdapter({ parts: [{ name: 'k8s', adapter: new KubernetesAdapter({ server: kube.url, token: kube.token }) }, { name: 'otel', adapter: otel }] }),
-  writeMode: 'low',
+  writeMode: 'high',
   pollMs: 1000,
   numRuns: 40,
   compile: { mode: 'heuristic' },
@@ -67,13 +66,13 @@ try {
   assert(linkField?.ref?.collection === 'otel_services', '디플로이먼트 이름 ↔ service.name 이 자동으로 이어짐');
 
   await new Promise((r) => setTimeout(r, 1500));
-  kube.setReady('shop/payments', 0); // 1) 파드가 준비를 잃는다
-  for (let i = 0; i < 40 && !rt.world!.violations.some((v) => v.collection === 'k8s_deployments' && v.pk === 'shop/payments'); i++) await new Promise((r) => setTimeout(r, 250));
-  assert(rt.world!.violations.some((v) => v.collection === 'k8s_deployments' && v.pk === 'shop/payments'), 'payments 디플로이먼트의 준비된 복제본 부족이 법칙 위반으로 보임');
-  await new Promise((r) => setTimeout(r, 1200));
-  failing = await startTwoServices({ endpoint: otel.endpoint, failRate: 1 }); // 2) 그 뒤 호출이 실패한다
-  for (let i = 0; i < 60 && !rt.world!.violations.some((v) => v.collection === 'otel_services' && v.pk === 'payments'); i++) await new Promise((r) => setTimeout(r, 250));
-  assert(rt.world!.violations.some((v) => v.collection === 'otel_services' && v.pk === 'payments'), 'payments 서비스의 실패가 법칙 위반으로 보임');
+  // 1) 누군가 payments 에 나쁜 이미지를 배포한다 → 파드가 준비를 잃는다 → 2) 그래서 호출이 실제로 실패한다
+  kube.deployImage('shop/payments', 'registry.example/app:2.0-broken');
+  const has = (c: string, pk: string) => rt.world!.violations.some((v) => v.collection === c && v.pk === pk);
+  for (let i = 0; i < 40 && !has('k8s_deployments', 'shop/payments'); i++) await new Promise((r) => setTimeout(r, 250));
+  assert(has('k8s_deployments', 'shop/payments'), '나쁜 이미지 배포 뒤 payments 디플로이먼트의 준비된 복제본 부족이 법칙 위반으로 보임');
+  for (let i = 0; i < 80 && !(has('otel_services', 'payments') && has('otel_services', 'web')); i++) await new Promise((r) => setTimeout(r, 250));
+  assert(has('otel_services', 'payments') && has('otel_services', 'web'), '그 결과 payments 와 그것을 부르는 web 이 실제로 실패함');
 
   const page = await browser.newPage({ viewport: { width: 1440, height: 860 }, deviceScaleFactor: shotsDir ? 2 : 1 });
   const errors: string[] = [];
@@ -129,6 +128,7 @@ try {
   assert(alert?.link && alert.diagnosis?.pattern === 'linked', `알림이 진단(다른 시스템 원인)과 링크를 싣고 옴 (${alerts.length}건)`);
   const webAlert = alerts.find((a) => a.phase === 'start' && a.entityId === 'otel_services:web');
   assert(webAlert?.root?.collection === 'k8s_deployments' && webAlert.root.pk === 'shop/payments' && webAlert.root.hops === 2, 'web 의 알림에는 근본 원인(2단계 위, 클러스터의 payments)이 실림');
+  assert(webAlert?.change?.[0]?.field === 'image' && webAlert.change[0].now === 'registry.example/app:2.0-broken', "알림에 근본 원인의 '직전 변경'(나쁜 이미지)도 실림");
   const page2 = await browser.newPage({ viewport: { width: 1440, height: 860 }, deviceScaleFactor: shotsDir ? 2 : 1 });
   page2.on('pageerror', (e: Error) => errors.push(e.message));
   await page2.goto(alert.link);
@@ -144,6 +144,32 @@ try {
   await page2.locator('#inspector .copy-link').click();
   const copied = String(await page2.evaluate('navigator.clipboard.readText()'));
   assert(copied.includes('focus=otel_services%3Apayments') && copied.includes(`at=${alert.at}`), "'링크' 버튼이 같은 개체·시점의 링크를 복사");
+  // 근본 원인에서 바로 고치기: web 의 사슬 끝(클러스터의 payments)으로 가서 '직전 변경 되돌리기'
+  await page.bringToFront();
+  await page.evaluate(`window.__iso.town.focus('otel_services:web')`);
+  await page.locator('#inspector .chain li.root button.link').click();
+  await page.waitForFunction(`window.__iso.state.selected === 'k8s_deployments:shop/payments'`, null, { timeout: 5000 });
+  await page.waitForSelector('#inspector .revert', { timeout: 10_000 });
+  assert(((await page.locator('#inspector .revert').textContent()) ?? '').includes('registry.example/app:2.0-broken'), "근본 원인의 살펴보기에 '위반 직전의 변경'(나쁜 이미지)이 보임");
+  await page.waitForTimeout(500);
+  if (shotsDir) await page.screenshot({ path: path.join(shotsDir, '27-revert.png') });
+  await page.locator('#inspector .revert button').click();
+  await page.waitForSelector('#modal-root .modal pre', { timeout: 10_000 });
+  const cmd = (await page.locator('#modal-root .modal pre').textContent()) ?? '';
+  assert(cmd.includes(`kubectl set image deployment/payments -n shop app=${kube.goodImage}`), `드라이런이 실제로 실행할 명령을 보여 줌: ${cmd.trim()}`);
+  if (shotsDir) await page.screenshot({ path: path.join(shotsDir, '28-revert-dryrun.png') });
+  await page.locator('#modal-root button', { hasText: '승인하고 실행' }).click();
+  for (let i = 0; i < 40 && kube.imageOf('shop/payments') !== kube.goodImage; i++) await new Promise((r) => setTimeout(r, 100));
+  assert(kube.imageOf('shop/payments') === kube.goodImage, '승인하자 클러스터의 이미지가 원래대로 돌아감');
+  for (let i = 0; i < 40 && has('k8s_deployments', 'shop/payments'); i++) await new Promise((r) => setTimeout(r, 250));
+  assert(!has('k8s_deployments', 'shop/payments'), '파드가 다시 준비되어 디플로이먼트가 회복');
+  for (let i = 0; i < 40 && rt.getActions()[0]?.status !== 'verified'; i++) await new Promise((r) => setTimeout(r, 250));
+  assert(rt.getActions()[0]?.status === 'verified', '실행한 변경을 다음 관측에서 확인(verified)');
+  // 서비스는 오류 비율이 1분 창에서 내려가야 회복한다: 호출이 다시 성공하는지 본다
+  const after = await app.hit(6);
+  assert(after.failed === 0, `되돌린 뒤 payments·web 호출이 다시 성공(실패 ${after.failed}/6)`);
+  await notifier.flush();
+  assert(alerts.some((a) => a.phase === 'end' && a.entityId === 'k8s_deployments:shop/payments'), "알림으로 근본 원인의 '복구' 가 감");
   assert(errors.length === 0, `브라우저 오류 없음${errors.length ? `: ${errors.join(' | ')}` : ''}`);
   console.log('\n한 세계 시험 통과 ✅');
   if (keep) await new Promise(() => {});
@@ -151,9 +177,9 @@ try {
   clearInterval(traffic);
   await notifier.stop();
   hook.close();
+  backend.close();
   await browser.close();
-  await healthy.close();
-  await failing?.close();
+  await app.close();
   await srv.close();
   await rt.stop();
   await kube.close();

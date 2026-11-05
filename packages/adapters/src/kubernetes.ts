@@ -54,6 +54,8 @@ interface Conn {
 type K8sObject = { metadata: { name: string; namespace?: string; uid: string; resourceVersion: string; creationTimestamp?: string; ownerReferences?: { kind: string; name: string }[]; labels?: Record<string, string> }; spec?: Record<string, unknown>; status?: Record<string, unknown> } & Record<string, unknown>;
 
 const b64 = (s?: string) => (s ? Buffer.from(s, 'base64') : undefined);
+/** 컨테이너 이미지 참조(레지스트리/경로:태그@다이제스트) */
+const IMAGE_RE = /^[a-z0-9][a-z0-9._\/:@-]{0,254}$/i;
 
 /** kubeconfig(YAML 또는 JSON)를 읽어 연결 정보로. kubectl 이 없어도 된다. */
 export function loadKubeconfig(opts: KubernetesAdapterOptions): Conn {
@@ -109,6 +111,8 @@ export class KubernetesAdapter implements Adapter {
   private conn!: Conn;
   private subs = new Set<{ closed: boolean; reqs: Set<http.ClientRequest>; timers: Set<NodeJS.Timeout> }>();
   private closed = false;
+  /** 디플로이먼트 → 첫 컨테이너 이름(드라이런 명령을 정확히 보여 주려고) */
+  private containerOf = new Map<string, string>();
 
   constructor(private opts: KubernetesAdapterOptions = {}) {
     this.system = opts.system ?? 'kubernetes';
@@ -179,7 +183,7 @@ export class KubernetesAdapter implements Adapter {
 
   async introspect(): Promise<SystemSchema> {
     const s = (name: string): { name: string; type: 'string'; nullable: boolean } => ({ name, type: 'string', nullable: false });
-    // 쓸 수 있는 곳은 디플로이먼트의 replicas 하나뿐: 나머지는 보이기만 한다
+    // 쓸 수 있는 곳은 디플로이먼트의 replicas(규모)와 image(첫 컨테이너의 이미지: 직전 변경 되돌리기용)뿐: 나머지는 보이기만 한다
     return readOnlyExcept(markSensitive({
       system: this.system,
       source: 'custom',
@@ -200,7 +204,7 @@ export class KubernetesAdapter implements Adapter {
           name: 'deployments',
           primaryKey: 'id',
           // 디플로이먼트 이름 = 보통 그 앱의 서비스 이름(OpenTelemetry service.name 과 같은 체계)
-          fields: [s('id'), { ...s('name'), joinKey: 'service' }, s('namespace'), { name: 'replicas', type: 'integer', nullable: false }, { name: 'ready_replicas', type: 'integer', nullable: false }, { name: 'status', type: 'string', nullable: false, enumValues: ['available', 'progressing', 'degraded'] }, { name: 'created_at', type: 'timestamp', nullable: true }],
+          fields: [s('id'), { ...s('name'), joinKey: 'service' }, s('namespace'), { name: 'replicas', type: 'integer', nullable: false }, { name: 'ready_replicas', type: 'integer', nullable: false }, { name: 'status', type: 'string', nullable: false, enumValues: ['available', 'progressing', 'degraded'] }, { name: 'image', type: 'string', nullable: true }, { name: 'created_at', type: 'timestamp', nullable: true }],
         },
         {
           name: 'pods',
@@ -231,7 +235,7 @@ export class KubernetesAdapter implements Adapter {
           ],
         },
       ],
-    }), ['deployments.replicas']);
+    }), ['deployments.replicas', 'deployments.image']);
   }
 
   async snapshot(only?: string[]): Promise<Snapshot> {
@@ -263,7 +267,10 @@ export class KubernetesAdapter implements Adapter {
         const ready = Number(d.status?.readyReplicas ?? 0);
         const conds = ((d.status?.conditions as { type: string; status: string }[]) ?? []);
         const available = conds.some((c) => c.type === 'Available' && c.status === 'True');
-        return { id: `${d.metadata.namespace}/${d.metadata.name}`, name: d.metadata.name, namespace: d.metadata.namespace ?? 'default', replicas, ready_replicas: ready, status: ready >= replicas && available ? 'available' : available ? 'progressing' : 'degraded', created_at: d.metadata.creationTimestamp ?? null };
+        const c0 = ((d.spec?.template as { spec?: { containers?: { name: string; image: string }[] } } | undefined)?.spec?.containers ?? [])[0];
+        const id = `${d.metadata.namespace}/${d.metadata.name}`;
+        if (c0) this.containerOf.set(id, c0.name);
+        return { id, name: d.metadata.name, namespace: d.metadata.namespace ?? 'default', replicas, ready_replicas: ready, status: ready >= replicas && available ? 'available' : available ? 'progressing' : 'degraded', image: c0?.image ?? null, created_at: d.metadata.creationTimestamp ?? null };
       });
     }
     if (want('pods')) {
@@ -387,26 +394,47 @@ export class KubernetesAdapter implements Adapter {
     return { namespace: m[1], name: m[2] };
   }
 
+  private checkCmd(cmd: UpdateCommand) {
+    const keys = Object.keys(cmd.patch);
+    if (cmd.collection !== 'deployments' || !keys.length || keys.some((k) => k !== 'replicas' && k !== 'image')) throw new UnsupportedCommandError('Kubernetes 어댑터는 디플로이먼트의 replicas 와 image 만 바꿀 수 있습니다');
+    if ('replicas' in cmd.patch) {
+      const n = Number(cmd.patch.replicas);
+      if (!Number.isInteger(n) || n < 0 || n > 100) throw new UnsupportedCommandError(`replicas 는 0~100 정수여야 합니다(${cmd.patch.replicas})`);
+    }
+    if ('image' in cmd.patch && !IMAGE_RE.test(String(cmd.patch.image ?? ''))) throw new UnsupportedCommandError('이미지 이름이 올바르지 않습니다');
+    return this.parseId(cmd);
+  }
+
   describe(cmd: UpdateCommand): string {
-    if (cmd.collection !== 'deployments' || Object.keys(cmd.patch).some((k) => k !== 'replicas')) throw new UnsupportedCommandError('Kubernetes 어댑터는 디플로이먼트의 replicas 만 바꿀 수 있습니다');
-    const { namespace, name } = this.parseId(cmd);
-    return `kubectl scale deployment/${name} -n ${namespace} --replicas=${Number(cmd.patch.replicas)}`;
+    const { namespace, name } = this.checkCmd(cmd);
+    const parts: string[] = [];
+    if ('image' in cmd.patch) parts.push(`kubectl set image deployment/${name} -n ${namespace} ${this.containerOf.get(`${namespace}/${name}`) ?? '<첫 컨테이너>'}=${String(cmd.patch.image)}`);
+    if ('replicas' in cmd.patch) parts.push(`kubectl scale deployment/${name} -n ${namespace} --replicas=${Number(cmd.patch.replicas)}`);
+    return parts.join(' && ');
   }
 
   async execute(cmd: UpdateCommand): Promise<void> {
-    if (cmd.collection !== 'deployments' || Object.keys(cmd.patch).some((k) => k !== 'replicas')) throw new UnsupportedCommandError('Kubernetes 어댑터는 디플로이먼트의 replicas 만 바꿀 수 있습니다');
-    const replicas = Number(cmd.patch.replicas);
-    if (!Number.isInteger(replicas) || replicas < 0 || replicas > 100) throw new UnsupportedCommandError(`replicas 는 0~100 정수여야 합니다(${cmd.patch.replicas})`);
-    const { namespace, name } = this.parseId(cmd);
+    const { namespace, name } = this.checkCmd(cmd);
     const p = `/apis/apps/v1/namespaces/${namespace}/deployments/${name}`;
     const cur = await this.request('GET', p);
     if (cur.status === 404) throw new ConflictError('디플로이먼트가 더 이상 존재하지 않습니다');
     const obj = cur.json as K8sObject;
+    const containers = ((obj.spec?.template as { spec?: { containers?: { name: string; image: string }[] } } | undefined)?.spec?.containers ?? []);
     // 낙관적 동시성: 미리보기 때의 값과 지금 값이 다르면 멈춘다
     if ('replicas' in cmd.before && Number(obj.spec?.replicas ?? 1) !== Number(cmd.before.replicas)) throw new ConflictError();
-    const r = await this.request('PATCH', p, { metadata: { resourceVersion: obj.metadata.resourceVersion }, spec: { replicas } }, 'application/merge-patch+json');
+    if ('image' in cmd.before && (containers[0]?.image ?? null) !== cmd.before.image) throw new ConflictError();
+    const spec: Record<string, unknown> = {};
+    if ('replicas' in cmd.patch) spec.replicas = Number(cmd.patch.replicas);
+    let type = 'application/merge-patch+json';
+    if ('image' in cmd.patch) {
+      if (!containers[0]) throw new UnsupportedCommandError('컨테이너가 없는 디플로이먼트입니다');
+      // 전략적 병합: 컨테이너 목록을 이름으로 합친다(다른 컨테이너·설정은 그대로)
+      spec.template = { spec: { containers: [{ name: containers[0].name, image: String(cmd.patch.image) }] } };
+      type = 'application/strategic-merge-patch+json';
+    }
+    const r = await this.request('PATCH', p, { metadata: { resourceVersion: obj.metadata.resourceVersion }, spec }, type);
     if (r.status === 409) throw new ConflictError();
-    if (r.status !== 200) throw new Error(`규모 조정 실패(${r.status}) ${String((r.json as { message?: string })?.message ?? '').slice(0, 160)}`);
+    if (r.status !== 200) throw new Error(`디플로이먼트 변경 실패(${r.status}) ${String((r.json as { message?: string })?.message ?? '').slice(0, 160)}`);
   }
 
   async close() {

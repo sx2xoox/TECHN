@@ -17,6 +17,10 @@ export interface FakeKube {
   addDeployment(name: string, namespace: string, replicas: number): void;
   /** 파드 중 n 개만 준비 상태로(나머지는 준비 안 됨: 프로브 실패 등) */
   setReady(id: string, n: number): void;
+  /** 누군가 kubectl set image 로 이미지를 바꾼 것처럼(좋은 이미지가 아니면 파드가 준비를 잃는다) */
+  deployImage(id: string, image: string): void;
+  imageOf(id: string): string;
+  goodImage: string;
   podsOf(id: string): number;
   close(): Promise<void>;
 }
@@ -25,6 +29,8 @@ type Obj = Record<string, any>;
 
 export async function startFakeKube(): Promise<FakeKube> {
   const token = 'test-token';
+  /** 이 이미지면 파드가 뜨고, 다른 이미지는 받아 오지 못해 준비되지 않는다 */
+  const GOOD_IMAGE = 'registry.example/app:1.0';
   let rv = 100;
   const nextRv = () => String(++rv);
   const now = new Date().toISOString();
@@ -47,7 +53,7 @@ export async function startFakeKube(): Promise<FakeKube> {
     return pod;
   };
   const addDeployment = (name: string, ns: string, replicas: number, ready: number) => {
-    deployments.push({ metadata: { name, namespace: ns, uid: `d-${name}`, resourceVersion: nextRv(), creationTimestamp: now }, spec: { replicas }, status: { replicas, readyReplicas: ready, conditions: [{ type: 'Available', status: ready > 0 ? 'True' : 'False' }] } });
+    deployments.push({ metadata: { name, namespace: ns, uid: `d-${name}`, resourceVersion: nextRv(), creationTimestamp: now }, spec: { replicas, template: { spec: { containers: [{ name: 'app', image: GOOD_IMAGE }] } } }, status: { replicas, readyReplicas: ready, conditions: [{ type: 'Available', status: ready > 0 ? 'True' : 'False' }] } });
   };
   // web: 건강함. api: 3개를 원하지만 1개만 준비됨(2개는 자리를 못 잡음). worker: 계속 다시 시작됨.
   addDeployment('web', 'default', 2, 2);
@@ -84,6 +90,19 @@ export async function startFakeKube(): Promise<FakeKube> {
     notify('deployments', 'MODIFIED', d);
   };
 
+  /** 새 이미지로 굴리기: 좋은 이미지면 파드가 모두 준비, 아니면 준비를 잃는다 */
+  const rollout = (d: Obj) => {
+    const ok = d.spec.template.spec.containers[0].image === GOOD_IMAGE;
+    const mine = pods.filter((p) => p.metadata.namespace === d.metadata.namespace && p.metadata.ownerReferences[0].name.startsWith(`${d.metadata.name}-`));
+    for (const p of mine) {
+      p.status.containerStatuses[0].ready = ok;
+      p.status.phase = ok ? 'Running' : 'Pending';
+      p.metadata.resourceVersion = nextRv();
+      notify('pods', 'MODIFIED', p);
+    }
+    d.status.readyReplicas = ok ? mine.length : 0;
+  };
+
   const patches: FakeKube['patches'] = [];
   const server = http.createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://x');
@@ -115,9 +134,24 @@ export async function startFakeKube(): Promise<FakeKube> {
         req.on('end', () => {
           const p = JSON.parse(body);
           patches.push({ path: url.pathname, body: p, contentType: String(req.headers['content-type']) });
-          if (req.headers['content-type'] !== 'application/merge-patch+json') return send(415, { message: 'unsupported patch type' });
+          const type = String(req.headers['content-type']);
+          if (type !== 'application/merge-patch+json' && type !== 'application/strategic-merge-patch+json') return send(415, { message: 'unsupported patch type' });
           if (p.metadata?.resourceVersion && p.metadata.resourceVersion !== d.metadata.resourceVersion) return send(409, { kind: 'Status', reason: 'Conflict', message: 'the object has been modified; please apply your changes to the latest version and try again', code: 409 });
-          setReplicas(d, Number(p.spec.replicas));
+          if (p.spec?.template) {
+            // 전략적 병합만 컨테이너를 이름으로 합친다(병합 패치는 목록을 통째로 바꾼다)
+            if (type !== 'application/strategic-merge-patch+json') return send(422, { message: 'merge-patch would replace the whole container list' });
+            for (const c of p.spec.template.spec.containers) {
+              const mine = d.spec.template.spec.containers.find((x: Obj) => x.name === c.name);
+              if (!mine) return send(422, { message: `no container ${c.name}` });
+              mine.image = c.image;
+            }
+            rollout(d);
+          }
+          if (p.spec?.replicas !== undefined) setReplicas(d, Number(p.spec.replicas));
+          else {
+            d.metadata.resourceVersion = nextRv();
+            notify('deployments', 'MODIFIED', d);
+          }
           send(200, d);
         });
         return;
@@ -138,6 +172,20 @@ export async function startFakeKube(): Promise<FakeKube> {
       addDeployment(name, ns, n, n);
       for (let i = 0; i < n; i++) notify('pods', 'ADDED', addPod(name, ns));
       notify('deployments', 'ADDED', find(`${ns}/${name}`));
+    },
+    goodImage: GOOD_IMAGE,
+    imageOf: (id) => find(id).spec.template.spec.containers[0].image,
+    deployImage: (id, image) => {
+      const d = find(id);
+      d.spec.template.spec.containers[0].image = image;
+      // 이미지 바뀜이 먼저 보이고, 그 다음 파드가 준비를 잃는다(실제 롤아웃처럼 두 단계)
+      d.metadata.resourceVersion = nextRv();
+      notify('deployments', 'MODIFIED', d);
+      setTimeout(() => {
+        rollout(d);
+        d.metadata.resourceVersion = nextRv();
+        notify('deployments', 'MODIFIED', d);
+      }, 30);
     },
     setReady: (id, n) => {
       const d = find(id);

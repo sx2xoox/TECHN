@@ -94,6 +94,35 @@ describe('Kubernetes → world', () => {
     kube.scaleBehindBack('default/web', n);
   });
 
+  it('reverts the deploy that broke a deployment: preview → approve → pods back → verified', async () => {
+    const hi = new IsomorphRuntime({ adapter: new KubernetesAdapter({ server: kube.url, token: kube.token }), grammar: rt.grammar!, writeMode: 'high', pollMs: 60_000, numRuns: 20 });
+    await hi.start();
+    try {
+      kube.deployImage('default/web', 'registry.example/app:2.0-broken'); // 누군가 나쁜 이미지를 배포
+      await new Promise((r) => setTimeout(r, 5));
+      await hi.refresh();
+      await new Promise((r) => setTimeout(r, 60)); // 파드가 준비를 잃는다
+      await hi.refresh();
+      expect(hi.world!.violations.some((v) => v.pk === 'default/web')).toBe(true);
+      const ins = hi.inspect('deployments:default/web');
+      expect(ins.revert!.changes).toEqual([{ field: 'image', now: 'registry.example/app:2.0-broken', to: kube.goodImage }]);
+      expect(ins.diagnosis).toMatchObject({ pattern: 'after-change', title: '직전 변경 뒤에 깨짐' });
+      const dr = hi.dryRun('deployments:default/web', '__revert');
+      expect(dr.allowed).toBe(true);
+      expect(dr.commandText).toEqual([`kubectl set image deployment/web -n default app=${kube.goodImage}`]);
+      expect(rt.dryRun('deployments:default/web', '__revert').allowed).toBe(false); // 쓰기 권한 low 로는 열리지 않는다(위험도 high)
+      const rec = await hi.approve(dr.planId!);
+      expect(rec.status).toBe('applied');
+      expect(kube.imageOf('default/web')).toBe(kube.goodImage);
+      await new Promise((r) => setTimeout(r, 5));
+      await hi.refresh();
+      expect(hi.getActions()[0].status).toBe('verified');
+      expect(hi.world!.violations.some((v) => v.pk === 'default/web')).toBe(false); // 회복
+    } finally {
+      await hi.stop();
+    }
+  });
+
   it('refuses to scale in read-only mode', async () => {
     const ro = new IsomorphRuntime({ adapter: new KubernetesAdapter({ server: kube.url, token: kube.token }), grammar: rt.grammar!, pollMs: 60_000, numRuns: 20 });
     await ro.start();

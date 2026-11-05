@@ -1,4 +1,5 @@
 import { diagnose, findCauses, type Diagnosis } from './diagnose.ts';
+import { findRevert } from './revert.ts';
 import type { ChangeEvent } from './diff.ts';
 import { kindById, parseEntityId, type WorldGrammar } from './grammar.ts';
 import { observe } from './invariants.ts';
@@ -47,6 +48,18 @@ export function buildInspect(opts: { snapshot: Snapshot; grammar: WorldGrammar; 
   const up = top && row ? upstreamOf(snap, grammar, schema, world, opts.events, kind.collection, parsed.pk, row) : null;
   const diagnosis = !top ? null : up?.via === 'blame' ? blameDiagnosis(up) : diagnose(top, topInv, causes);
   const chain = top && row ? chainFrom(snap, grammar, schema, world, opts.events, kind.collection, parsed.pk, row) : [];
+  const revert = top && row ? findRevert(top, opts.events, schema, topInv, row) : null;
+  // 위반 직전에 받은 변경이 있으면: '값을 쓰는 코드' 같은 일반론보다 그 변경을 원인 후보로 든다(더 강한 패턴은 그대로)
+  if (diagnosis && revert && !['linked', 'race', 'dangling-ref', 'duplicate'].includes(diagnosis.pattern)) {
+    const what = revert.changes.map((c) => `${c.field}: ${JSON.stringify(c.to)} → ${JSON.stringify(c.now)}`).join(', ');
+    Object.assign(diagnosis, {
+      pattern: 'after-change',
+      title: '직전 변경 뒤에 깨짐',
+      detail: `위반이 시작되기 직전에 이 개체가 바뀌었습니다(${what}). 그 뒤 '${top!.title}' 가 깨졌습니다.`,
+      confidence: 'medium',
+      suggestion: '그 변경을 되돌려 보세요(아래 \'이 변경 되돌리기\' — 드라이런 뒤 승인).',
+    } satisfies Diagnosis);
+  }
   const affordances: AffordanceOption[] = grammar.affordances
     .filter((a) => a.entityKind === kind.id)
     .map((a) => {
@@ -55,7 +68,7 @@ export function buildInspect(opts: { snapshot: Snapshot; grammar: WorldGrammar; 
       return { id: a.id, title: a.title, description: a.description, risk: a.risk, allowed, ...(reason ? { reason } : {}) };
     });
   const { related, more } = row ? relatedOf(snap, grammar, schema, world, kind.collection, parsed.pk, row) : { related: [], more: 0 };
-  return { type: 'inspect', entityId, entity, collection: kind.collection, pk: parsed.pk, row: masked, fields, violations, causes, diagnosis, affordances, related, ...(more ? { relatedMore: more } : {}), ...(chain.length ? { chain } : {}) };
+  return { type: 'inspect', entityId, entity, collection: kind.collection, pk: parsed.pk, row: masked, fields, violations, causes, diagnosis, affordances, related, ...(more ? { relatedMore: more } : {}), ...(chain.length ? { chain } : {}), ...(revert ? { revert } : {}) };
 }
 
 type World = ReturnType<typeof observe>;

@@ -1,4 +1,5 @@
 import type { CauseEvent, Diagnosis } from './diagnose.ts';
+import type { RevertProposal } from './revert.ts';
 import type { SystemModel } from './model.ts';
 import type { Hypothesis, SimulationResult } from './simulate.ts';
 import type { Affordance, ChannelName, WorldGrammar } from './grammar.ts';
@@ -106,6 +107,8 @@ export interface InspectMessage {
   relatedMore?: number;
   /** 근본 원인 사슬: 이 위반에서 거슬러 올라간 곳들(마지막이 근본 원인). 거슬러 갈 곳이 없으면 비어 있다 */
   chain?: ChainStep[];
+  /** 위반 직전에 이 행이 받은 변경(되돌릴 수 있는 것만). 드라이런은 affordanceId '__revert' */
+  revert?: RevertProposal;
 }
 
 export interface ChainStep {

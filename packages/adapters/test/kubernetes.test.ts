@@ -141,6 +141,22 @@ describe('Kubernetes adapter (fake API with real response shapes)', () => {
     expect(kube.podsOf('default/web')).toBe(5);
   });
 
+  it('changes the container image with a strategic merge patch, guarded like replicas', async () => {
+    const s = await a.snapshot(['deployments']);
+    expect(s.collections.deployments.find((d) => d.id === 'shop/api')!.image).toBe(kube.goodImage);
+    const cmd = { op: 'update' as const, collection: 'deployments', pk: 'shop/api', patch: { image: 'registry.example/app:2.0' }, before: { image: kube.goodImage } };
+    expect(a.describe(cmd)).toBe('kubectl set image deployment/api -n shop app=registry.example/app:2.0');
+    await a.execute(cmd);
+    const p = kube.patches.at(-1)!;
+    expect(p.contentType).toBe('application/strategic-merge-patch+json'); // 컨테이너를 이름으로 합친다(목록을 통째로 바꾸지 않는다)
+    expect(p.body).toMatchObject({ metadata: { resourceVersion: expect.any(String) }, spec: { template: { spec: { containers: [{ name: 'app', image: 'registry.example/app:2.0' }] } } } });
+    expect(kube.imageOf('shop/api')).toBe('registry.example/app:2.0');
+    // 미리보기 뒤에 누가 이미지를 또 바꿨으면 덮어쓰지 않는다
+    await expect(a.execute({ ...cmd, patch: { image: kube.goodImage }, before: { image: 'something/else:1' } })).rejects.toBeInstanceOf(ConflictError);
+    await expect(a.execute({ ...cmd, patch: { image: 'bad image; rm -rf /' } })).rejects.toThrow(/이미지 이름/);
+    await a.execute({ ...cmd, patch: { image: kube.goodImage }, before: { image: 'registry.example/app:2.0' } });
+  });
+
   it('refuses anything but replicas, bad ids and absurd sizes', async () => {
     await expect(a.execute({ op: 'update' as const, collection: 'pods', pk: 'default/x', patch: { phase: 'Running' }, before: {} })).rejects.toBeInstanceOf(UnsupportedCommandError);
     await expect(a.execute({ op: 'update' as const, collection: 'deployments', pk: 'default/web', patch: { name: 'x' }, before: {} })).rejects.toBeInstanceOf(UnsupportedCommandError);
