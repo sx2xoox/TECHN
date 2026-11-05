@@ -13,6 +13,7 @@ export * from './http-json.ts';
 export * from './docker.ts';
 export * from './sdk.ts';
 export * from './otel.ts';
+export * from './otel-proto.ts';
 
 export type AdapterConfig =
   | ({ type: 'postgres' } & PostgresAdapterOptions)

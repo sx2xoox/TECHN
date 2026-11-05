@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { OtelAdapter } from '../src/index.ts';
+import { decodeOtlpTraces, OtelAdapter } from '../src/index.ts';
 import { startTwoServices, type TwoServices } from '../../../examples/otel/two-services.ts';
 
 /**
@@ -67,9 +67,49 @@ describe('OpenTelemetry adapter (real SDK)', () => {
     expect(snap.collections.services.find((s) => s.id === 'payments')!.error_count).toBe(1);
   });
 
-  it('refuses protobuf with a clear message and stays read-only', async () => {
-    const r = await fetch(adapter.endpoint, { method: 'POST', headers: { 'content-type': 'application/x-protobuf' }, body: new Uint8Array([1, 2]) });
+  it('refuses other content types with a clear message and stays read-only', async () => {
+    const r = await fetch(adapter.endpoint, { method: 'POST', headers: { 'content-type': 'application/grpc' }, body: new Uint8Array([1, 2]) });
     expect(r.status).toBe(415);
     await expect(adapter.execute()).rejects.toThrow(/읽기 전용/);
+  });
+});
+
+describe('OpenTelemetry adapter (real SDK, http/protobuf)', () => {
+  it('decodes the official protobuf exporter just like JSON', async () => {
+    const a = new OtelAdapter({ port: 0 });
+    await a.connect();
+    const app2 = await startTwoServices({ endpoint: a.endpoint, failRate: 0.3, protocol: 'proto' });
+    const r = await app2.hit(12);
+    await app2.close();
+    try {
+      expect(a.received).toBe(12 * 3);
+      const snap = await a.snapshot();
+      const svc = Object.fromEntries(snap.collections.services.map((s) => [s.id, s]));
+      expect(svc.payments.error_count).toBe(r.failed);
+      const charges = snap.collections.spans.filter((s) => s.name === 'POST /charge');
+      expect(charges.every((s) => s.caller_id === 'web' && s.kind === 'server' && String(s.trace_id).length === 32)).toBe(true);
+      expect(charges.filter((s) => s.status === 'error')).toHaveLength(r.failed);
+      // 시각이 나노초 정밀도로 올바르게 읽혔다(지금 근처, 길이는 양수)
+      expect(Math.abs(Date.parse(String(charges[0].created_at)) - Date.now())).toBeLessThan(60_000);
+      expect(charges.every((s) => Number(s.duration_ms) >= 15)).toBe(true);
+    } finally {
+      await a.close();
+    }
+  });
+
+  it('rejects truncated or random protobuf cleanly', async () => {
+    expect(() => decodeOtlpTraces(new Uint8Array([0x0a, 0x10, 0x01]))).toThrow(/잘렸/);
+    let seed = 7;
+    const rnd = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
+    for (let i = 0; i < 300; i++) {
+      const bytes = new Uint8Array(Array.from({ length: 1 + Math.floor(rnd() * 200) }, () => Math.floor(rnd() * 256)));
+      try {
+        decodeOtlpTraces(bytes);
+      } catch (e) {
+        expect(String(e)).toMatch(/protobuf/);
+      }
+    }
+    const r = await fetch(adapter.endpoint, { method: 'POST', headers: { 'content-type': 'application/x-protobuf' }, body: new Uint8Array([0x0a, 0x10, 0x01]) });
+    expect(r.status).toBe(400);
   });
 });

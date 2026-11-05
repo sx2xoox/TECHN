@@ -1,6 +1,7 @@
 import { timingSafeEqual } from 'node:crypto';
 import http from 'node:http';
 import { markSensitive, type Row, type Snapshot, type SystemSchema, type UpdateCommand } from '@isomorph/core';
+import { decodeOtlpTraces } from './otel-proto.ts';
 import { UnsupportedCommandError, type Adapter } from './types.ts';
 
 /**
@@ -9,7 +10,7 @@ import { UnsupportedCommandError, type Adapter } from './types.ts';
  *  - 최근 스팬마다 주민 하나: 부른 서비스 → 불린 서비스로 걷는다(부모 스팬의 서비스가 다르면 그쪽이 '부른 쪽')
  * 읽기 전용이다(트레이스는 지나간 사건의 기록이므로 세계에서 바꿀 것이 없다).
  *
- * 보내는 쪽 설정 예: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:4318/v1/traces, OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+ * 보내는 쪽 설정 예: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:4318/v1/traces (http/json 과 http/protobuf 모두 받는다)
  */
 export interface OtelAdapterOptions {
   /** 수신 포트(OTLP/HTTP 표준은 4318). 0 이면 빈 포트 */
@@ -103,20 +104,30 @@ export class OtelAdapter implements Adapter {
           return;
         }
       }
-      // 정확히 application/json 만: 'text/plain;x=json' 같은 값은 다른 사이트의 '단순 요청' 으로 보낼 수 있어 거절한다
-      if (String(req.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase() !== 'application/json') {
-        res.writeHead(415, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'OTLP JSON 만 받습니다(OTEL_EXPORTER_OTLP_PROTOCOL=http/json)' }));
+      // 받는 형식: application/json 또는 application/x-protobuf 만(둘 다 다른 사이트의 '단순 요청' 으로는 보낼 수 없다)
+      const type = String(req.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase();
+      if (type !== 'application/json' && type !== 'application/x-protobuf') {
+        res.writeHead(415, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'OTLP/HTTP 의 JSON(application/json) 또는 protobuf(application/x-protobuf) 만 받습니다' }));
         return;
       }
-      let body = '';
-      req.on('data', (c) => {
-        body += c;
-        if (body.length > 20_000_000) req.destroy();
+      const chunks: Buffer[] = [];
+      let size = 0;
+      req.on('data', (c: Buffer) => {
+        size += c.length;
+        if (size > 20_000_000) return req.destroy();
+        chunks.push(c);
       });
       req.on('end', () => {
         try {
-          this.ingest(JSON.parse(body) as OtlpRequest);
-          res.writeHead(200, { 'content-type': 'application/json' }).end('{}');
+          const body = Buffer.concat(chunks);
+          if (type === 'application/x-protobuf') {
+            this.ingest(decodeOtlpTraces(body) as OtlpRequest);
+            // 빈 ExportTraceServiceResponse = 0 바이트
+            res.writeHead(200, { 'content-type': 'application/x-protobuf' }).end();
+          } else {
+            this.ingest(JSON.parse(body.toString('utf8')) as OtlpRequest);
+            res.writeHead(200, { 'content-type': 'application/json' }).end('{}');
+          }
         } catch (e) {
           res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
         }

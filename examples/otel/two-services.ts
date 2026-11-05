@@ -2,6 +2,7 @@ import http from 'node:http';
 import { context, defaultTextMapGetter, defaultTextMapSetter, ROOT_CONTEXT, SpanKind, SpanStatusCode, trace, type Context } from '@opentelemetry/api';
 import { W3CTraceContextPropagator } from '@opentelemetry/core';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
+import { OTLPTraceExporter as OTLPProtoTraceExporter } from '@opentelemetry/exporter-trace-otlp-proto';
 import { resourceFromAttributes } from '@opentelemetry/resources';
 import { SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
 import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
@@ -19,12 +20,13 @@ export interface TwoServices {
   close(): Promise<void>;
 }
 
-export async function startTwoServices(opts: { endpoint: string; failRate?: number; paymentsDelayMs?: [number, number] }): Promise<TwoServices> {
+export async function startTwoServices(opts: { endpoint: string; failRate?: number; paymentsDelayMs?: [number, number]; protocol?: 'json' | 'proto'; headers?: Record<string, string> }): Promise<TwoServices> {
   const propagator = new W3CTraceContextPropagator();
   const provider = (service: string) =>
     new NodeTracerProvider({
       resource: resourceFromAttributes({ 'service.name': service }),
-      spanProcessors: [new SimpleSpanProcessor(new OTLPTraceExporter({ url: opts.endpoint }))],
+      // 공식 내보내기: http/json(기본) 또는 http/protobuf
+      spanProcessors: [new SimpleSpanProcessor(opts.protocol === 'proto' ? new OTLPProtoTraceExporter({ url: opts.endpoint, headers: opts.headers }) : new OTLPTraceExporter({ url: opts.endpoint, headers: opts.headers }))],
     });
   const webProvider = provider('web');
   const payProvider = provider('payments');
