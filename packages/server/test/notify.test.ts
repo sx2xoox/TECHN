@@ -35,7 +35,7 @@ afterAll(async () => {
 
 const tick = async () => {
   await new Promise((r) => setTimeout(r, 5));
-  await rt.tick();
+  await rt.refresh(); // 이 변경 뒤에 시작한 관측(진행 중이던 관측을 빌려 쓰지 않는다)
 };
 const waitFor = async (n: number) => {
   for (let i = 0; i < 100 && got.length < n; i++) await new Promise((r) => setTimeout(r, 20));

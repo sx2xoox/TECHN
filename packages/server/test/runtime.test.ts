@@ -58,7 +58,7 @@ describe('IsomorphRuntime end-to-end on the demo shop', () => {
     expect(rec.status).toBe('applied');
     expect((await productStock(3)).active).toBe(false);
     await new Promise((r) => setTimeout(r, 5));
-    await rt.tick();
+    await rt.refresh(); // 실행 뒤에 시작한 관측으로 확인한다
     expect(rt.getActions()[0].status).toBe('verified');
     // 잠긴 창고로 들어오는 주문은 거절된다
     const order = await shop.shop.placeOrder(1, 3);

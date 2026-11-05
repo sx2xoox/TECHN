@@ -15,7 +15,7 @@ let healthy: TwoServices;
 let rt: IsomorphRuntime;
 const tick = async () => {
   await new Promise((r) => setTimeout(r, 5));
-  await rt.tick();
+  await rt.refresh(); // 이 변경 뒤에 시작한 관측(진행 중이던 관측을 빌려 쓰지 않는다)
 };
 
 beforeAll(async () => {

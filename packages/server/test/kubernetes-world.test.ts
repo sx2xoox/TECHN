@@ -56,7 +56,7 @@ describe('Kubernetes → world', () => {
     expect(rec.status).toBe('applied');
     expect(kube.podsOf('default/web')).toBe(target);
     await new Promise((r) => setTimeout(r, 5)); // 실행 뒤에 시작한 관측으로만 확인한다
-    await rt.tick();
+    await rt.refresh(); // 이 변경 뒤에 시작한 관측(진행 중이던 관측을 빌려 쓰지 않는다)
     expect(rt.getActions()[0].status).toBe('verified');
     expect(replicas('default/web')).toBe(target);
     const undo = await rt.undo(rec.id);
@@ -65,7 +65,7 @@ describe('Kubernetes → world', () => {
   });
 
   it('re-plans instead of overwriting when someone scaled it with kubectl in between', async () => {
-    await rt.tick();
+    await rt.refresh(); // 이 변경 뒤에 시작한 관측(진행 중이던 관측을 빌려 쓰지 않는다)
     const dr = rt.dryRun('deployments:default/web', 'deployments_restock');
     const per = Number(dr.commands[0].patch.replicas) - Number(dr.commands[0].before.replicas);
     kube.scaleBehindBack('default/web', 7); // 다른 사람이 kubectl scale --replicas=7
@@ -82,12 +82,12 @@ describe('Kubernetes → world', () => {
     const crash = rt.world!.violations.find((v) => v.invariantId === 'schema_pods_restarts_3')!;
     expect(rt.inspect(`pods:${crash.pk}`).diagnosis!.pattern).not.toBe('race'); // 상한(재시작 ≤ 3)에는 경쟁 조건 이야기를 하지 않는다
     // 건강하던 web 의 목표를 누군가 올렸는데 새 파드가 준비되지 못하면: '기준 값이 방금 바뀜 — 따라잡는 중일 수 있음'
-    await rt.tick();
+    await rt.refresh(); // 이 변경 뒤에 시작한 관측(진행 중이던 관측을 빌려 쓰지 않는다)
     const n = replicas('default/web');
     expect(rt.world!.violations.some((x) => x.pk === 'default/web')).toBe(false);
     kube.scaleBehindBack('default/web', n + 2, false);
     await new Promise((r) => setTimeout(r, 5));
-    await rt.tick();
+    await rt.refresh(); // 이 변경 뒤에 시작한 관측(진행 중이던 관측을 빌려 쓰지 않는다)
     const after = rt.inspect('deployments:default/web').diagnosis!;
     expect(after.title).toBe('기준 값이 방금 바뀜');
     expect(after.detail).toContain(`replicas: ${n} → ${n + 2}`);
