@@ -231,6 +231,13 @@ describe('event log', () => {
 });
 
 describe('colour-blind accessibility', () => {
+  it('tells a timestamp order problem from a gap between two quantities', () => {
+    const inv = (field: string, other: string) => ({ id: 'x', collection: 'c', title: 't', expr: { op: 'cmpField' as const, field, cmp: '>=' as const, other }, anomaly: 'glitch' as const, source: 'schema' as const, status: 'confirmed' as const, severity: 'warning' as const });
+    const v = (values: Record<string, unknown>) => ({ invariantId: 'x', collection: 'c', pk: 1, kind: 'glitch', severity: 'warning', title: 't', values }) as never;
+    expect(diagnose(v({ closed_at: '2026-01-01T00:00:00Z', opened_at: '2026-01-02T00:00:00Z' }), inv('closed_at', 'opened_at'), []).pattern).toBe('time-order');
+    expect(diagnose(v({ ready: 1, wanted: 3 }), inv('ready', 'wanted'), []).pattern).toBe('mismatch');
+  });
+
   it('computes CIEDE2000 like the published reference data (Sharma, Wu & Dalal 2005)', () => {
     const cases: [[number, number, number], [number, number, number], number][] = [
       [[50, 2.6772, -79.7751], [50, 0, -82.7485], 2.0425],

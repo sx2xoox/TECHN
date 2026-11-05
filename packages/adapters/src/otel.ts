@@ -1,6 +1,6 @@
 import { timingSafeEqual } from 'node:crypto';
 import http from 'node:http';
-import { markSensitive, type Row, type Snapshot, type SystemSchema, type UpdateCommand } from '@isomorph/core';
+import { markSensitive, readOnlyExcept, type Row, type Snapshot, type SystemSchema, type UpdateCommand } from '@isomorph/core';
 import { decodeOtlpTraces } from './otel-proto.ts';
 import { UnsupportedCommandError, type Adapter } from './types.ts';
 
@@ -181,7 +181,8 @@ export class OtelAdapter implements Adapter {
   }
 
   async introspect(): Promise<SystemSchema> {
-    return markSensitive({
+    // 트레이스는 지나간 사건: 세계에서 바꿀 것이 없다
+    return readOnlyExcept(markSensitive({
       system: this.system,
       source: 'custom',
       constraints: [],
@@ -217,7 +218,7 @@ export class OtelAdapter implements Adapter {
           ],
         },
       ],
-    });
+    }), []);
   }
 
   async snapshot(only?: string[]): Promise<Snapshot> {

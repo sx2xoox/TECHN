@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { markSensitive, verifyGrammar, type SystemSchema } from '@isomorph/core';
+import { markSensitive, readOnlyExcept, verifyGrammar, type SystemSchema } from '@isomorph/core';
 import {
+  autoRepair,
   BENCH_SCHEMAS,
   compile,
   compileHeuristic,
@@ -33,6 +34,22 @@ describe('heuristic metaphor compiler', () => {
     // 재고 음수 법칙이 유령 상자로 보이도록
     expect(g.invariants.find((i) => i.id === 'nonneg_products_stock')).toMatchObject({ anomaly: 'ghost', status: 'proposed' });
     expect(verifyGrammar(g, shop, { numRuns: 60 }).ok).toBe(true);
+  });
+
+  it('never offers an action on a field the system will not accept writes to', () => {
+    // 같은 도커 스키마라도 어댑터가 쓰기를 받지 않는다면(관측 전용) 스위치를 열지 않는다
+    const ro = readOnlyExcept(docker, []);
+    const g = compileHeuristic(ro);
+    expect(g.affordances).toEqual([]);
+    expect(verifyGrammar(g, ro, { numRuns: 30 }).ok).toBe(true);
+    // 다른 컴파일러(LLM 등)가 그래도 열어 두면 검증기가 막고, 자동 수리가 닫는다
+    const open = compileHeuristic(docker);
+    const report = verifyGrammar(open, ro, { numRuns: 30 });
+    expect(report.ok).toBe(false);
+    expect(report.issues.some((i) => i.code === 'WRITE_UNSUPPORTED')).toBe(true);
+    const fixed = autoRepair(open, report, ro).grammar;
+    expect(fixed.affordances).toEqual([]);
+    expect(verifyGrammar(fixed, ro, { numRuns: 30 }).ok).toBe(true);
   });
 
   it('turns container state into lights that can be switched (with writeTrue/writeFalse)', () => {

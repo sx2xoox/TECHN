@@ -1,4 +1,4 @@
-import { markSensitive, type Row, type Snapshot, type SystemSchema, type UpdateCommand } from '@isomorph/core';
+import { markSensitive, readOnlyExcept, type Row, type Snapshot, type SystemSchema, type UpdateCommand } from '@isomorph/core';
 import { inferCollection, inferRefs } from './infer.ts';
 import { normalizeRow, UnsupportedCommandError, type Adapter } from './types.ts';
 
@@ -36,12 +36,14 @@ export function defineAdapter(spec: AdapterSpec): Adapter {
     if (spec.schema) {
       const s = typeof spec.schema === 'function' ? await spec.schema() : spec.schema;
       schema = markSensitive({ ...s, source: 'custom' });
+      if (!spec.write) schema = readOnlyExcept(schema, []);
       return schema;
     }
     const rows = await spec.read();
     const names = spec.collections?.map((c) => c.name) ?? Object.keys(rows);
     const cols = names.map((n) => inferCollection(n, rows[n] ?? [], spec.collections?.find((c) => c.name === n)?.primaryKey));
     schema = markSensitive({ system: spec.system, source: 'custom', collections: inferRefs(cols), constraints: [] });
+    if (!spec.write) schema = readOnlyExcept(schema, []);
     return schema;
   };
   return {

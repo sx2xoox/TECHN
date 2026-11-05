@@ -2,6 +2,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { DockerAdapter, type DockerAdapterOptions } from './docker.ts';
 import { HttpJsonAdapter, type HttpJsonAdapterOptions } from './http-json.ts';
+import { KubernetesAdapter, type KubernetesAdapterOptions } from './kubernetes.ts';
 import { OtelAdapter, type OtelAdapterOptions } from './otel.ts';
 import { PostgresAdapter, type PostgresAdapterOptions } from './postgres.ts';
 import type { Adapter } from './types.ts';
@@ -14,6 +15,7 @@ export * from './docker.ts';
 export * from './sdk.ts';
 export * from './otel.ts';
 export * from './otel-proto.ts';
+export * from './kubernetes.ts';
 
 export type AdapterConfig =
   | ({ type: 'postgres' } & PostgresAdapterOptions)
@@ -21,6 +23,8 @@ export type AdapterConfig =
   | ({ type: 'docker' } & DockerAdapterOptions)
   /** OpenTelemetry 트레이스 수신기(OTLP/HTTP JSON) */
   | ({ type: 'otel' } & OtelAdapterOptions)
+  /** Kubernetes(kubeconfig 또는 server/token) */
+  | ({ type: 'kubernetes' } & KubernetesAdapterOptions)
   /** 직접 만든 어댑터 모듈: default export 가 (options) => Adapter (defineAdapter 사용 권장) */
   | { type: 'module'; path: string; options?: Record<string, unknown> };
 
@@ -36,6 +40,8 @@ export function createAdapter(config: AdapterConfig): Adapter {
       return new DockerAdapter(config);
     case 'otel':
       return new OtelAdapter(config);
+    case 'kubernetes':
+      return new KubernetesAdapter(config);
   }
 }
 

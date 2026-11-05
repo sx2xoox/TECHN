@@ -253,6 +253,10 @@ function planKind(c: CollectionSchema, role: Role, schema: SystemSchema, roles: 
     hidden.push(n);
   }
 
+  // 시스템이 쓰기를 받지 않는 필드는 편집을 열지 않는다(그러면 그 필드로는 행동도 생기지 않는다)
+  const systemReadOnly = new Set(c.fields.filter((f) => f.readOnly).map((f) => f.name));
+  for (const b of channels) if (systemReadOnly.has(b.field) && b.channel !== 'sign') (b as { readOnly?: boolean }).readOnly = true;
+
   // NPC 가 여러 행을 다룰 때 너무 많아지지 않게
   const maxEntities = role === 'npc' ? 40 : 80;
   const kind: EntityKind = {
@@ -295,11 +299,11 @@ function planKind(c: CollectionSchema, role: Role, schema: SystemSchema, roles: 
         inverseOf: `${id}_off`,
       });
     }
-    if (b.channel === 'stack' && RESTOCK_RE.test(b.field)) {
+    if (b.channel === 'stack' && !b.readOnly && RESTOCK_RE.test(b.field)) {
       const per = (b.scale.domain[1] - b.scale.domain[0]) / (b.scale.range[1] - b.scale.range[0]);
       affordances.push({
         id: `${id}_restock`,
-        title: `${title}에 상자 2개 채우기`,
+        title: /replica/i.test(b.field) ? `${title} 복제본 ${per * 2}개 늘리기` : `${title}에 상자 2개 채우기`,
         description: `${b.field} 를 ${per * 2}만큼 늘립니다`,
         entityKind: id,
         edits: [{ channel: 'stack', delta: 2 }],
@@ -308,7 +312,7 @@ function planKind(c: CollectionSchema, role: Role, schema: SystemSchema, roles: 
     }
     if (b.channel === 'tint' && role === 'npc') {
       const cancelValue = Object.keys(b.map).find((v) => CANCEL_VALUES.includes(v.toLowerCase()));
-      if (cancelValue) {
+      if (cancelValue && !systemReadOnly.has(b.field)) {
         delete b.readOnly;
         affordances.push({
           id: `${id}_cancel`,

@@ -300,7 +300,12 @@ npm run isomorph -- connect https://api.example.com/v1/orders https://api.exampl
 npm run isomorph -- connect otel
 ```
 
+```bash
+npm run isomorph -- connect kubernetes
+```
+
 - 옵션: `--schema <스키마>`, `--port <포트>`, `--host <주소>`, `--write low|medium|high`.
+- Kubernetes 는 `~/.kube/config`(또는 `KUBECONFIG`)의 현재 컨텍스트를 씁니다. `--context <이름>`, `--kubeconfig <파일>`, `--namespace <이름>` 으로 바꿀 수 있습니다.
 - 바깥 주소(`--host 0.0.0.0`)로 열려면 접근 토큰(`ISOMORPH_TOKEN`)이 꼭 있어야 합니다. 없으면 시작하지 않습니다.
 
 **컨테이너로**:
@@ -331,6 +336,8 @@ npx tsx packages/server/src/cli.ts serve --config examples/postgres.config.json
 | PostgreSQL | 테이블·키·enum·CHECK 제약 자동 파악, 이름으로 참조 추론 | 조건부 `UPDATE … WHERE pk AND 변경전값` (낙관적 동시성) | [postgres.config.json](examples/postgres.config.json) |
 | HTTP/JSON | 표본으로 스키마 추론 | 설정한 경로로 `PATCH`(직전 값 재확인 후) | [http.config.json](examples/http.config.json) |
 | Docker | Engine API(컨테이너·CPU·메모리·재시작) | state 편집 → start/stop/pause/unpause | [docker.config.json](examples/docker.config.json) |
+| Kubernetes | 노드·디플로이먼트·파드·이벤트, watch API 로 즉시 반영 | 디플로이먼트 `replicas` 만(merge-patch + `resourceVersion` 전제조건) | `{ "type": "kubernetes" }` |
+| OpenTelemetry | OTLP/HTTP 수신(JSON·protobuf) | 없음(지나간 기록) | `{ "type": "otel" }` |
 | 직접 만든 어댑터 | `defineAdapter({ read() })` 하나면 스키마·참조·민감 필드를 추론 | 선택(`write`) | [claude-code.ts](examples/adapters/claude-code.ts) |
 
 - `writeMode`: `read-only`(기본) / `low` / `medium` / `high`. 이 값보다 위험도가 높은 행동은 실행할 수 없습니다.
@@ -366,6 +373,28 @@ npx tsx packages/server/src/cli.ts uninstall-feed --config isomorph.config.json
 - **OpenTelemetry 수신기**를 바깥 주소로 열 때는 수신 토큰(`ISOMORPH_OTLP_TOKEN`)이 필요합니다. 이 토큰은 운영자 토큰과 다른 값으로, 보내는 앱은 `OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer <토큰>` 으로 보냅니다. `application/json` 이 아닌 요청은 다른 사이트에서 보낸 위장 요청일 수 있어 받지 않습니다.
 - 독립 보안 검토에서 나온 문제(높음 3·중간 2·낮음 6)는 모두 고쳤고, 각각 회귀 시험이 있습니다(`packages/server/test/security.test.ts`).
 
+### 공유본 — 서버 없이 여는 HTML 한 파일
+
+![공유본 — 파일을 열면 서버 없이 세계가 뜬다. 상단에 '공유본 · 보기 전용'](docs/screenshots/20-shared.png)
+
+지금 보고 있는 세계를 HTML 파일 하나로 내려받아 메일·메신저로 보낼 수 있습니다. 받는 사람은 ISOMORPH 도, 시스템 접근 권한도 없이 브라우저로 엽니다.
+
+- 운영자는 상단의 **공유본** 버튼으로 내려받습니다(최근 10분). 명령줄에서는 아래처럼 만듭니다(먼저 `npm run build`, 대상을 30초 지켜본 뒤 저장).
+
+```bash
+npm run isomorph -- snapshot postgres://user:pass@localhost:5432/app --observe 30 --out world.html
+```
+
+- 파일 안에는 그 시점의 상태와 사건 기록만 들어 있습니다. 세계는 브라우저가 기록에서 다시 계산합니다. 그래서 시간 여행, 살펴보기와 원인 진단, 가설 실험실이 파일 안에서 그대로 됩니다.
+- **보기 전용**입니다. 행동 버튼은 잠기고, 시스템을 바꾸는 요청은 거절합니다. 파일에는 시스템 주소나 토큰이 없습니다.
+- **민감 필드는 가명으로 바뀝니다.** 공유본마다 새로 만든 비밀 키로 가명화하고 그 키는 버립니다. 같은 값은 같은 가명이 되므로 '중복' 같은 법칙은 그대로 보이지만, 원래 값은 파일 어디에도 없습니다.
+- CI 는 데모 쇼핑몰의 공유본을 내려받아 네트워크를 모두 막은 채 `file://` 로 엽니다. 그리고 아래를 확인합니다(`scripts/snapshot-e2e.ts`).
+  - 고객 이메일이 파일에 하나도 없는지.
+  - 재고 음수 위반이 보이는지.
+  - 시간 여행과 원인 진단이 되는지.
+  - 행동이 잠겼는지, 네트워크 요청이 0인지.
+- 이 시험이 실제로 새는 곳 하나를 찾아냈습니다. 컴파일러용 스키마 통계에 민감 필드의 표본 값이 들어 있었습니다. 지금은 민감 필드의 통계를 서로 다른 값의 개수만 남깁니다. 그래서 LLM 컴파일러에 보내는 스키마 요약에도 원래 값이 들어가지 않습니다.
+
 ### 어댑터 SDK — 무엇이든 세계로
 
 ```ts
@@ -386,7 +415,7 @@ export default () =>
 
 ![OpenTelemetry 트레이스 세계 — 오류가 나는 서비스에 불길, 호출마다 걷는 로봇](docs/screenshots/17-otel.png)
 
-ISOMORPH 가 OTLP/HTTP 수신기(JSON, 표준 포트 4318)가 되어, 이미 OpenTelemetry 로 계측된 앱의 트레이스를 그대로 받습니다.
+ISOMORPH 가 OTLP/HTTP 수신기(표준 포트 4318)가 되어, 이미 OpenTelemetry 로 계측된 앱의 트레이스를 그대로 받습니다. 인코딩은 **JSON 과 protobuf** 둘 다 받습니다. 대부분의 SDK·Collector 기본값인 `http/protobuf` 도 설정을 바꿀 필요가 없습니다.
 
 - 서비스(`service.name`)는 건물이 됩니다. 분당 호출은 인파, 오류 수는 불길, 평균 지연은 걸음, 상태(정상·주의·실패)는 색입니다.
 - 최근 스팬은 걷는 로봇이 됩니다. 부모 스팬의 서비스가 다르면 그 서비스에서 이 서비스로 걸어갑니다.
@@ -404,13 +433,66 @@ npm run build && npm run demo:otel
 - 서비스 사이의 부모·자식 관계로 '부른 쪽'을 찾습니다.
 - 사람 손 없이 법칙을 통과한 세계가 열리고, 오류 스팬이 실패 색으로 보입니다(`packages/adapters/test/otel.test.ts`, `packages/server/test/otel-world.test.ts`).
 
-다른 앱을 연결할 때는 앱 쪽 환경변수를 아래처럼 둡니다(프로토콜은 JSON).
+다른 앱을 연결할 때는 앱 쪽 환경변수에 주소만 둡니다(`http/protobuf`·`http/json` 모두 됨, gRPC 는 아직 안 됨).
 
 ```bash
-OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:4318/v1/traces OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:4318/v1/traces
 ```
 
+protobuf 해석기는 의존성 없이 직접 짰습니다(`packages/adapters/src/otel-proto.ts`). 공식 protobuf 내보내기(`@opentelemetry/exporter-trace-otlp-proto`)가 보낸 트레이스가 JSON 과 같은 세계가 되는지, 잘리거나 무작위인 바이트를 깔끔하게 거절하는지 시험합니다.
+
 설정 파일에서는 `{ "adapter": { "type": "otel", "port": 4318 } }` 로 씁니다.
+
+### Kubernetes — 원하는 상태와 실제 상태
+
+![Kubernetes 세계 — 서버탑(노드), 관리소(디플로이먼트), 공장(파드). 준비 안 된 노드·모자란 복제본·되풀이되는 재시작이 법칙 위반으로 보인다](docs/screenshots/21-kubernetes.png)
+
+Kubernetes 의 약속은 '원하는 상태(spec)로 실제 상태(status)를 맞춘다' 입니다. 클러스터는 이 약속을 강제하지 못하고 그쪽으로 수렴할 뿐입니다. 그래서 ISOMORPH 는 이것을 세계의 법칙으로 삼습니다.
+
+| 시스템 | 세계 |
+|---|---|
+| 노드 | **서버탑**. 준비(Ready)가 아니면 불이 꺼지고 법칙 위반 |
+| 디플로이먼트 | **관리소**. 원하는 복제본 수 = 상자, 준비된 수 = 건물 크기, 상태 = 깃발 색·모양 |
+| 파드 | **공장**. 단계(Running·Pending·Failed) = 색, 재시작 횟수 = 불길 |
+| 이벤트 | 해당 파드로 걸어가는 **로봇**. Warning 은 다른 색 |
+
+세계의 법칙(클러스터가 스스로 강제하지 못하는 것):
+
+- 준비된 복제본 수가 원하는 수에 닿아야 합니다(이미지를 못 받거나 자리가 없으면 위반).
+- 파드가 실패 상태로 남아 있으면 안 됩니다.
+- 파드가 되풀이해서 다시 시작되면 안 됩니다(CrashLoop).
+- 노드는 준비 상태여야 합니다.
+
+![모자란 디플로이먼트를 살펴보기 — '두 값이 어긋난 채로 머묾'](docs/screenshots/22-kubernetes-inspect.png)
+
+원인 진단은 두 값의 관계(`ready_replicas ≥ replicas`)를 시간 순서 문제나 경쟁 조건으로 오해하지 않습니다. 어느 쪽이 먼저 움직였는지를 봅니다.
+
+- 누군가 목표(`replicas`)를 올린 직후에 깨졌다면 '기준 값이 방금 바뀜 — 따라잡는 중일 수 있음' 이라고 진단합니다.
+- 처음부터 어긋나 있었다면 '두 값이 어긋난 채로 머묾' 이라고 진단합니다.
+
+**쓸 수 있는 것은 하나뿐**입니다. 바로 디플로이먼트의 복제본 수(`kubectl scale` 과 같음)입니다.
+
+- 드라이런은 실행할 명령을 `kubectl scale deployment/web -n default --replicas=4` 처럼 그대로 보여 줍니다.
+- 실행은 merge-patch 에 `resourceVersion` 전제조건을 붙여 보냅니다. 미리보기 뒤에 누가 `kubectl` 로 바꿨으면 덮어쓰지 않습니다. '늘리기' 같은 상대 편집은 최신 값 위에 다시 계획합니다.
+- 실행 뒤에는 새 파드가 실제로 준비될 때까지 관측해서 확인합니다. 되돌리기도 됩니다.
+- 그 밖의 필드(노드, 파드 상태 등)는 어댑터가 **읽기 전용**으로 표시합니다. 그래서 컴파일러는 그런 행동을 만들지 않고, 다른 컴파일러(LLM)가 만들어도 검증기가 `WRITE_UNSUPPORTED` 로 막습니다.
+
+연결은 kubeconfig 로 합니다.
+
+- YAML 을 직접 읽으므로 `kubectl` 이 없어도 됩니다.
+- 클라이언트 인증서(mTLS), 토큰, 토큰 파일을 씁니다. EKS·GKE·AKS 의 인증 플러그인(`exec`)은 실행해서 토큰을 받고, 만료 1분 전에 새로 받습니다.
+- 클러스터 안 파드에서 돌리면 서비스 계정으로 붙습니다.
+- 변경은 watch API 로 즉시 받습니다.
+
+**어떻게 확인했나**:
+
+- 로컬: 실제 응답 모양의 시험용 API 서버(`packages/adapters/test/fake-kube.ts`)로 읽기·연결 관계·watch·규모 조정·충돌·되돌리기를 시험합니다. 이 절의 스크린샷도 이 서버로 찍었습니다(실제 클러스터 화면이 아님).
+- CI(`real Kubernetes (kind)` 작업): 실제 클러스터를 띄워 아래를 확인합니다.
+  - 정상 디플로이먼트(nginx 2개)와 없는 이미지를 가리키는 디플로이먼트를 배포합니다.
+  - 망가진 쪽만 법칙 위반으로 보이는지.
+  - API 서버가 낡은 `resourceVersion` 의 쓰기를 409 로 거절하는지.
+  - 세계에서 '복제본 늘리기'를 승인하면 Kubernetes 가 실제로 새 파드를 띄우고, 관측으로 확인되는지. 되돌리면 원래대로 돌아오는지.
+  - 설정 없이 `isomorph connect kubernetes` 한 줄로 세계가 열리는지(`packages/server/test/kubernetes.real.test.ts`).
 
 ### AI 에이전트 세계 (기획안 시나리오 C)
 
@@ -511,20 +593,37 @@ npm run bench:lab
 npm run study:selftest
 ```
 
-- `npm test`: 단위·통합 테스트 100개입니다. 실제 시스템 테스트 3개는 환경변수로 켭니다(아래).
+- `npm test`: 단위·통합 테스트 123개입니다. 실제 시스템 테스트 7개(PostgreSQL·Docker 3개, Kubernetes 4개)는 환경변수로 켭니다(아래).
+- `npm run e2e:snapshot`: 공유본을 내려받아 네트워크를 막은 브라우저로 엽니다.
 - `npm run bench:compile`: 컴파일러 KPI 를 잽니다.
 - `npm run e2e`: 실제 브라우저로 데모 시나리오를 처음부터 끝까지 수행합니다.
 - `npm run bench:latency`: 상태 변화가 세계에 반영되기까지의 지연을 폴링/푸시 두 방식으로 잽니다.
 - `npm run bench:lab`: 가설 실험실의 예측을 진짜 쇼핑몰 코드의 결과와 비교합니다.
 - `npm run bench:real` · `npm run bench:heldout`: 남이 만든 공개 DB 와 오픈소스 서비스 스키마로 컴파일·검증·거짓 경보·은유 구체성을 잽니다(위 '처음 보는 실제 시스템에서').
 - `npm run study:selftest`: 사용자 실험 도구를 봇으로 끝까지 돌려 봅니다(실험 결과가 아님).
-- CI([`.github/workflows/ci.yml`](.github/workflows/ci.yml)): 타입 검사, 테스트, 컴파일 벤치마크, 빌드, 실제 PostgreSQL 16 + Docker 통합 테스트, 브라우저 E2E, 실험 도구 자가 시험을 돌립니다.
+- CI([`.github/workflows/ci.yml`](.github/workflows/ci.yml)): 아래를 돌립니다.
+  - 타입 검사, 테스트, 컴파일 벤치마크, 빌드.
+  - 실제 PostgreSQL 16 + Docker 통합 테스트.
+  - 실제 Kubernetes(kind) 클러스터 통합 테스트.
+  - 브라우저 E2E(데모, 공유본).
+  - 실험 도구 자가 시험.
+  - 컨테이너 이미지 빌드와 연기 시험.
 
 실제 시스템 통합 테스트는 아래처럼 켭니다.
 
 ```bash
 ISOMORPH_TEST_PG_URL=postgres://postgres@127.0.0.1:5432/postgres ISOMORPH_TEST_DOCKER=1 npx vitest run packages/adapters/test/real.test.ts
 ```
+
+```bash
+kubectl config view --raw -o json --minify > /tmp/kubeconfig.json
+```
+
+```bash
+ISOMORPH_TEST_KUBECONFIG=/tmp/kubeconfig.json npx vitest run packages/server/test/kubernetes.real.test.ts
+```
+
+Kubernetes 시험에는 클러스터에 `default/web`(nginx, 복제본 2개)과 `default/broken`(없는 이미지)이 있어야 합니다. CI 의 kind 작업을 참고하세요.
 
 | 기획안 KPI | 목표 | 측정 결과 | 판정 |
 |---|---|---|---|
@@ -535,7 +634,7 @@ ISOMORPH_TEST_PG_URL=postgres://postgres@127.0.0.1:5432/postgres ISOMORPH_TEST_D
 | 상태 → 화면 반영 지연 | 500ms 미만 | 푸시 관측: 중앙값 **14ms**, p95 **66ms** (폴링만 쓸 때는 중앙값 368ms · p95 506ms) | 달성 |
 | 엔티티 1만 개 60fps | 60fps | GPU 없는 이 환경(SwiftShader 소프트웨어 렌더링)에서 1만 개 전체 보기(구역 요약) **57~60fps**. 건물이 보이게 확대하면 개체 수와 무관하게 소프트웨어 래스터화가 병목(500개도 21fps, 1만 개 11fps). 이때 프레임당 CPU 는 약 5ms | 전체 보기 달성, 확대 상태는 실제 GPU 측정 필요 |
 | 색각 접근성 | — (구현 후 추가) | 상태 색 채널 13개 모두 적·녹·청색맹에서 색 또는 모양으로 구분(색만으로는 이전 8% → 지금 69%) | 확인(시뮬레이션) — 당사자 확인은 아직 |
-| 실제 시스템 동작 | — | 실제 **PostgreSQL 16**(bigint·numeric·date·jsonb·uuid·enum, CHECK, 조건부 쓰기, LISTEN/NOTIFY), 실제 **Docker 데몬**(컨테이너 관측, 렌즈를 통한 정지·재시작), 진짜 **OpenTelemetry SDK** 의 OTLP 트레이스(서비스 간 문맥 전파 포함)에서 통합 테스트 통과 | 확인 |
+| 실제 시스템 동작 | — | 실제 **PostgreSQL 16**(bigint·numeric·date·jsonb·uuid·enum, CHECK, 조건부 쓰기, LISTEN/NOTIFY), 실제 **Docker 데몬**(컨테이너 관측, 렌즈를 통한 정지·재시작), 실제 **Kubernetes**(kind: mTLS 연결, 망가진 디플로이먼트 탐지, resourceVersion 409, 렌즈를 통한 규모 조정 → 새 파드 준비 확인 → 되돌리기), 진짜 **OpenTelemetry SDK** 의 OTLP 트레이스(JSON·protobuf, 서비스 간 문맥 전파 포함)에서 통합 테스트 통과 | 확인 |
 | 가설 예측 정확도 | — (구현 후 추가) | 데모 쇼핑몰 가설 6종에서 모델 예측과 진짜 코드 결과의 확률 차이 평균 **0.10**, 최대 **0.33**(주문 3배 가설). 질적 결론(깨진다/안 깨진다)은 6종 모두 일치. 위 '가설 실험실' 표 참고 | 데모에서 확인, 실제 서비스 미측정 |
 | 비개발자 이상 탐지 실험 | 대시보드 대비 50% 단축 | 실험 도구 완성(`npm run study`, CI 자가 시험 통과). **참가자 실험은 아직 하지 않음** | 미측정 |
 
@@ -561,22 +660,23 @@ E2E 가 확인하는 것: 세계가 열림 → 반짝 세일 경쟁 조건이 �
 - **은유의 구체성**: 처음 보는 스키마에서는 종류의 약 30%가 '건물'·'주민' 같은 일반 은유로 남습니다. 필드·구조로 고른 은유는 이름 은유보다 덜 생생합니다. 렌즈 법칙상 정확하지만, 알아보기 쉬운 그림은 아직 아닙니다.
 - **행 제한**: 큰 테이블은 최신 `rowLimit` 행만 봅니다. 창 밖 참조 확인(`lookup`)은 PostgreSQL 어댑터에만 있습니다. HTTP·사용자 어댑터는 `lookup` 을 구현해야 같은 오판을 피할 수 있습니다. 시맨틱 줌은 렌더링 부담을 줄일 뿐, 관측량 자체를 줄이지는 않습니다.
 - **원인 시각의 정밀도**: 원인 추적의 시각은 관측 시각(푸시 관측이면 변경 직후)과 행의 `created_at`/`updated_at` 에 기댑니다.
-- **세계 테마**: 지금은 '픽셀 마을' 하나입니다. 항구 도시(K8s) 같은 문법 계열이 다음 단계입니다.
+- **세계 테마**: 지금은 '픽셀 마을' 하나입니다. Kubernetes 도 마을 문법으로 그립니다(서버탑·관리소·공장). 항구 도시 같은 다른 문법 계열은 아직입니다.
+- **Kubernetes**: 노드·디플로이먼트·파드·이벤트만 봅니다(StatefulSet·DaemonSet·Job·Service·Ingress 는 아직). 쓰기는 복제본 수 하나입니다. 이벤트는 최근 200개만 봅니다. 큰 클러스터에서 목록 전체를 다시 읽는 비용은 재지 않았습니다.
 - **색각 접근성**: 미리보기는 근사입니다. 모양은 아주 멀리서 보면(구역 요약) 보이지 않습니다. 색각 이상이 있는 사람과의 확인은 아직 하지 않았습니다.
-- **OpenTelemetry**: JSON 인코딩의 트레이스만 받습니다(protobuf·지표·로그는 아직). 서비스 사이 관계는 부모 스팬으로만 찾습니다. 부모가 아직 도착하지 않은 스팬이나 계측되지 않은 외부 호출은 '부른 쪽'이 비어 보입니다.
+- **OpenTelemetry**: OTLP/HTTP 의 트레이스만 받습니다(gRPC·지표·로그는 아직). 서비스 사이 관계는 부모 스팬으로만 찾습니다. 부모가 아직 도착하지 않은 스팬이나 계측되지 않은 외부 호출은 '부른 쪽'이 비어 보입니다.
 
 ## 프로젝트 구조
 
 ```
 packages/core       세계 문법·렌즈·검증기·불변식·원인 추적·규칙 학습·가설 시뮬레이터·프로토콜 (브라우저/Node 공용)
 packages/compiler   Metaphor Compiler (규칙 기반 + Claude API) · 벤치마크 스키마
-packages/adapters   Postgres · HTTP/JSON · Docker · OpenTelemetry(OTLP) · 어댑터 SDK(defineAdapter)
+packages/adapters   Postgres · HTTP/JSON · Docker · Kubernetes · OpenTelemetry(OTLP JSON·protobuf) · 어댑터 SDK(defineAdapter)
 packages/server     런타임 · 이벤트 저장소 · WebSocket 서버 · CLI · 사용자 실험 서버·분석
 packages/client     PixiJS 렌더러 · 한국어 UI · 실험 화면(study.html)
 packages/assets     PixelLab 에셋 파이프라인
 apps/demo-shop      경쟁 조건 버그가 있는 데모 쇼핑몰 · 복제 DB 샌드박스
 examples/           연결 설정 예시 · 예제 어댑터(Claude Code 세션) · 합성 세션 기록기 · OTel 계측 예제 서비스
-scripts/            demo · demo-agent · demo-otel · e2e · bench-(compile|latency|lab|real-schemas|heldout-schemas|a11y) · study(·analyze·selftest·power)
+scripts/            demo · demo-agent · demo-otel · e2e · snapshot-e2e · bench-(compile|latency|lab|real-schemas|heldout-schemas|a11y) · study(·analyze·selftest·power)
 docs/study/         사용자 실험 진행자 문서(계획서·사전 등록·모집·동의서·점검표)
 Dockerfile          컨테이너 이미지(비특권 사용자, 바깥 주소는 토큰 필수)
 ```

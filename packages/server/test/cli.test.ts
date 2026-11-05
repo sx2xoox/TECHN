@@ -12,6 +12,8 @@ describe('isomorph connect', () => {
     expect(configFromTarget(['postgres://u@db:5432/shop'], { schema: 'sales' })).toMatchObject({ adapter: { type: 'postgres', system: 'shop', schema: 'sales' }, writeMode: 'read-only', host: '127.0.0.1' });
     expect(configFromTarget(['https://api.example.com/v1/orders?limit=50', 'https://api.example.com/v1/products']).adapter).toMatchObject({ type: 'http', baseUrl: 'https://api.example.com', collections: [{ name: 'orders', path: '/v1/orders?limit=50' }, { name: 'products', path: '/v1/products' }] });
     expect(configFromTarget(['otel']).adapter).toMatchObject({ type: 'otel', port: 4318 });
+    expect(configFromTarget(['k8s']).adapter).toEqual({ type: 'kubernetes' });
+    expect(configFromTarget(['kubernetes'], { schema: 'shop', context: 'kind-isomorph' }).adapter).toEqual({ type: 'kubernetes', namespace: 'shop', context: 'kind-isomorph' });
     expect(() => configFromTarget(['https://a.example.com/x', 'https://b.example.com/y'])).toThrow(/같은 호스트/);
     expect(() => configFromTarget(['ftp://x'])).toThrow(/알 수 없는 대상/);
   });

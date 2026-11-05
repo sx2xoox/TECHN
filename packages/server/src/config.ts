@@ -53,9 +53,9 @@ export function loadAssets(dir?: string): AssetManifest | null {
  *   otel   OpenTelemetry 트레이스 수신(OTLP/HTTP JSON, 4318)
  *   docker   로컬 Docker 엔진
  */
-export function configFromTarget(targets: string[], opts: { schema?: string; port?: number; host?: string; write?: IsomorphConfig['writeMode'] } = {}): IsomorphConfig {
+export function configFromTarget(targets: string[], opts: { schema?: string; port?: number; host?: string; write?: IsomorphConfig['writeMode']; context?: string; kubeconfig?: string } = {}): IsomorphConfig {
   const [target] = targets;
-  if (!target) throw new Error('연결할 대상을 주세요: postgres://… · https://… · otel · docker');
+  if (!target) throw new Error('연결할 대상을 주세요: postgres://… · https://… · otel · docker · kubernetes');
   let adapter: AdapterConfig;
   if (/^postgres(ql)?:\/\//i.test(target)) {
     const system = decodeURIComponent(new URL(target).pathname.replace(/^\//, '')) || 'postgres';
@@ -75,8 +75,11 @@ export function configFromTarget(targets: string[], opts: { schema?: string; por
     adapter = { type: 'otel', port: 4318, ...(opts.host ? { host: opts.host } : {}), ...(process.env.ISOMORPH_OTLP_TOKEN ? { token: process.env.ISOMORPH_OTLP_TOKEN } : {}) };
   } else if (target === 'docker') {
     adapter = { type: 'docker' };
+  } else if (target === 'kubernetes' || target === 'k8s') {
+    // --schema 는 네임스페이스로 읽는다(그 네임스페이스만)
+    adapter = { type: 'kubernetes', ...(opts.schema ? { namespace: opts.schema } : {}), ...(opts.context ? { context: opts.context } : {}), ...(opts.kubeconfig ? { kubeconfig: opts.kubeconfig } : {}) };
   } else {
-    throw new Error(`알 수 없는 대상: ${target} (postgres://… · https://… · otel · docker)`);
+    throw new Error(`알 수 없는 대상: ${target} (postgres://… · https://… · otel · docker · kubernetes)`);
   }
   return {
     adapter,

@@ -81,7 +81,7 @@ ${channels}
 4. 색깔(tint)은 값마다 서로 다른 색이어야 하고(단사성), fallback 색은 어떤 값의 색과도 겹치면 안 된다. 색 이름: ${COLOR_NAMES.join(', ')}.
 5. stack 채널: 정수 필드라면 (domainMax-domainMin)/(rangeMax-rangeMin) 이 1 이상의 정수가 되게 하라(상자 1개 = k 단위). rangeMin 은 0.
 6. 민감 필드(sensitive=true: 이메일·비밀번호·전화 등)는 절대 채널이나 labelField 에 쓰지 말고 hidden 에 넣어라.
-7. 편집 가능한 바인딩은 사람이 이해할 행동(affordance)이 있을 때만 열어라. 나머지는 readOnly=true. 범주형 필드에 lit 을 쓰려면 when(켜짐에 해당하는 값들)과 writeTrue/writeFalse 를 함께 지정하라.
+7. 편집 가능한 바인딩은 사람이 이해할 행동(affordance)이 있을 때만 열어라. 나머지는 readOnly=true. 스키마에 readOnly 로 표시된 필드는 시스템이 쓰기를 받지 않으므로 반드시 readOnly=true. 범주형 필드에 lit 을 쓰려면 when(켜짐에 해당하는 값들)과 writeTrue/writeFalse 를 함께 지정하라.
 8. NPC 의 recencyField 는 생성 시각 timestamp 필드, recencySeconds 는 보통 60.
 9. route 필드는 반드시 참조(ref) 필드여야 하며, 가리키는 컬렉션은 건물로 그려져야 한다.
 10. 불변식은 DB가 이미 강제하지 않지만 깨지면 사고인 규칙(예: 재고 ≥ 0, 수정시각 ≥ 생성시각, 참조 대상 존재)을 찾아라. 이상 현상 종류:
@@ -108,6 +108,7 @@ export function describeSchemaForPrompt(schema: SystemSchema): string {
           ...(f.ref ? { ref: `${f.ref.collection}.${f.ref.field}`, refEnforced: !!f.refEnforced } : {}),
           ...(f.enumValues ? { enumValues: f.enumValues } : {}),
           ...(f.sensitive ? { sensitive: true } : {}),
+          ...(f.readOnly ? { readOnly: true } : {}),
           ...(f.stats?.min !== undefined ? { min: f.stats.min, max: f.stats.max } : {}),
         })),
       })),

@@ -153,6 +153,7 @@ export function staticChecks(g: WorldGrammar, schema: SystemSchema): Verificatio
         continue;
       }
       if (f.sensitive) err('PRIVACY_LEAK', `${k.title}: 민감 필드 ${b.field} 를 세계에 그릴 수 없습니다`, ex);
+      if (f.readOnly && isEditableBinding(b)) err('WRITE_UNSUPPORTED', `${k.title}: 시스템이 ${b.field} 쓰기를 받지 않는데 ${b.channel} 가 편집 가능하게 열려 있습니다`, ex);
       if (isQuant(b)) {
         if (f.type !== 'integer' && f.type !== 'number') err('TYPE_MISMATCH', `${k.title}: ${CHANNELS[b.channel].ko}(${b.channel})는 수치 필드가 필요한데 ${b.field} 는 ${f.type} 입니다`, ex);
         if (!(b.scale.domain[0] < b.scale.domain[1])) err('DEGENERATE_SCALE', `${k.title}: ${b.field} 의 domain 은 [작은 값, 큰 값] 이어야 합니다`, ex);

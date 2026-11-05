@@ -77,8 +77,9 @@ export function autoRepair(input: WorldGrammar, report: VerificationReport, sche
       case 'DUPLICATE_CHANNEL':
       case 'WRITE_UNDEFINED':
       case 'WRITE_INCONSISTENT':
+      case 'WRITE_UNSUPPORTED':
         if (k && binding) {
-          if (issue.code === 'WRITE_UNDEFINED' || issue.code === 'WRITE_INCONSISTENT') {
+          if (issue.code === 'WRITE_UNDEFINED' || issue.code === 'WRITE_INCONSISTENT' || issue.code === 'WRITE_UNSUPPORTED') {
             (binding as { readOnly?: boolean }).readOnly = true;
             dropAffordancesFor(k.id, binding.channel);
             actions.push({ code: issue.code, kind: k.id, action: `${binding.field}(${binding.channel}) 를 읽기 전용으로` });

@@ -28,6 +28,8 @@ export interface FieldSchema {
   sensitive?: boolean;
   /** 참조가 DB 제약으로 강제되는지(true) 이름 추론인지(false) */
   refEnforced?: boolean;
+  /** 시스템(어댑터)이 이 필드로의 쓰기를 받지 않는다: 보이기만 하고, 세계에서 바꾸는 행동은 만들지 않는다 */
+  readOnly?: boolean;
   stats?: FieldStats;
 }
 
@@ -91,6 +93,15 @@ export function markSensitive(schema: SystemSchema): SystemSchema {
       ...c,
       fields: c.fields.map((f) => (SENSITIVE_RE.test(f.name) ? { ...f, sensitive: true } : f)),
     })),
+  };
+}
+
+/** writable('collection.field') 에 없는 필드는 모두 읽기 전용으로 표시한다(쓰기 경로가 좁은 어댑터용) */
+export function readOnlyExcept(schema: SystemSchema, writable: string[]): SystemSchema {
+  const ok = new Set(writable);
+  return {
+    ...schema,
+    collections: schema.collections.map((c) => ({ ...c, fields: c.fields.map((f) => (ok.has(`${c.name}.${f.name}`) ? f : { ...f, readOnly: true })) })),
   };
 }
 

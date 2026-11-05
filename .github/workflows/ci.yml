@@ -46,6 +46,40 @@ jobs:
           ISOMORPH_TEST_PG_URL: postgres://postgres@127.0.0.1:5432/postgres
           ISOMORPH_TEST_DOCKER: '1'
 
+  kubernetes:
+    name: real Kubernetes (kind)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+          cache: npm
+      - run: npm ci
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: isomorph
+      - name: a healthy deployment and one whose image cannot be pulled
+        run: |
+          kubectl create deployment web --image=nginx:1.27-alpine --replicas=2
+          kubectl create deployment broken --image=registry.invalid/isomorph/does-not-exist:1
+          kubectl rollout status deployment/web --timeout=180s
+          kubectl config view --raw -o json --minify > /tmp/kubeconfig.json
+      - run: npx vitest run packages/server/test/kubernetes.real.test.ts
+        env:
+          ISOMORPH_TEST_KUBECONFIG: /tmp/kubeconfig.json
+      - name: one command with the default YAML kubeconfig (no kubectl involved)
+        run: |
+          npm run isomorph -- connect kubernetes --port 4100 > /tmp/iso.log 2>&1 &
+          for i in $(seq 1 90); do curl -sf http://127.0.0.1:4100/api/hello | grep -q '"running"' && break; sleep 1; done
+          curl -sf http://127.0.0.1:4100/api/world | grep -q 'default/web'
+          curl -sf http://127.0.0.1:4100/api/world | grep -q 'schema_deployments_ready_replicas_replicas'
+      - name: cluster state on failure
+        if: failure()
+        run: |
+          kubectl get deploy,rs,pods,events -A -o wide | tail -60
+          cat /tmp/iso.log || true
+
   e2e:
     name: browser end-to-end demo
     runs-on: ubuntu-latest

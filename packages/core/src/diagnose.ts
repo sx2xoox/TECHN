@@ -20,7 +20,7 @@ export interface CauseEvent {
 }
 
 export interface Diagnosis {
-  pattern: 'race' | 'sudden-change' | 'dangling-ref' | 'duplicate' | 'time-order' | 'unknown';
+  pattern: 'race' | 'sudden-change' | 'dangling-ref' | 'duplicate' | 'time-order' | 'mismatch' | 'unknown';
   title: string;
   detail: string;
   confidence: 'high' | 'medium' | 'low';
@@ -28,6 +28,9 @@ export interface Diagnosis {
 }
 
 const TS_FIELD_RE = /^(created|inserted|updated|modified)(_at)?$/i;
+const ISO_VALUE_RE = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/;
+/** 사건 요약('a: 1 → 2, b: …')에서 정확히 그 필드가 바뀌었는가(replicas ≠ ready_replicas) */
+const touches = (summary: string, field: string) => new RegExp(`(^|, )${field.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}: `).test(summary);
 
 function rowTime(row: Row | null, fallback: number, prefer: 'created' | 'updated'): number {
   if (!row) return fallback;
@@ -150,12 +153,31 @@ export function diagnose(v: Violation, inv: Invariant | undefined, causes: Cause
     return { pattern: 'duplicate', title: '같은 값이 두 번 존재', detail: `${expr.field}=${JSON.stringify(v.values[expr.field])} 인 행이 둘 이상입니다.`, confidence: 'high', suggestion: 'UNIQUE 제약 또는 멱등 키를 추가하세요.' };
   }
   if (expr?.op === 'cmpField') {
-    return { pattern: 'time-order', title: '시간 순서가 뒤바뀜', detail: `${expr.field} 와 ${expr.other} 의 순서가 법칙과 반대입니다. 서버 간 시계 불일치나 잘못된 갱신일 수 있습니다.`, confidence: 'medium' };
+    const a = v.values[expr.field];
+    const b = v.values[expr.other];
+    // 두 시각의 순서(created_at ≤ closed_at 등)
+    if ([a, b].some((x) => typeof x === 'string' && ISO_VALUE_RE.test(x))) {
+      return { pattern: 'time-order', title: '시간 순서가 뒤바뀜', detail: `${expr.field} 와 ${expr.other} 의 순서가 법칙과 반대입니다. 서버 간 시계 불일치나 잘못된 갱신일 수 있습니다.`, confidence: 'medium' };
+    }
+    // 두 값의 관계(준비된 수 ≥ 원하는 수, 지불액 ≤ 총액 등): 어느 쪽이 먼저 움직였나
+    const rel = `${expr.field}=${JSON.stringify(a)}, ${expr.other}=${JSON.stringify(b)} (법칙: ${expr.field} ${expr.cmp} ${expr.other})`;
+    const moved = (f: string) => causes.filter((c) => c.relation === 'self' && c.kind === 'update' && touches(c.summary, f)).at(-1);
+    const mine = moved(expr.field);
+    const theirs = moved(expr.other);
+    if (theirs && (!mine || theirs.at >= mine.at)) {
+      return { pattern: 'mismatch', title: '기준 값이 방금 바뀜', detail: `${theirs.summary} — ${expr.other} 가 바뀐 뒤 ${expr.field} 가 아직 따라오지 못했습니다. ${rel}. 따라잡는 중일 수 있습니다.`, confidence: 'medium', suggestion: `잠시 뒤에도 그대로면 ${expr.field} 가 따라오지 못하는 이유(자원 부족·오류)를 확인하세요.` };
+    }
+    if (mine) {
+      return { pattern: 'sudden-change', title: '한 번의 갱신이 법칙을 깨뜨림', detail: `${mine.summary} — 이 갱신 직후 ${rel} 가 되었습니다.`, confidence: 'medium', suggestion: '이 값을 쓰는 코드 경로를 확인하세요.' };
+    }
+    return { pattern: 'mismatch', title: '두 값이 어긋난 채로 머묾', detail: `관측 구간 내내 ${rel} 였습니다. 한쪽이 다른 쪽을 따라잡지 못하고 있습니다.`, confidence: 'low', suggestion: `${expr.field} 가 ${expr.other} 를 따라가지 못하게 막는 것(자원 부족·오류·멈춘 작업)을 확인하세요.` };
   }
   if (expr?.op === 'cmp' && typeof expr.value === 'number') {
     const field = expr.field;
     const referencing = causes.filter((c) => c.relation === 'referencing' && c.kind === 'insert');
-    const selfDrops = causes.filter((c) => c.relation === 'self' && c.kind === 'update' && c.summary.includes(`${field}:`));
+    const selfDrops = causes.filter((c) => c.relation === 'self' && c.kind === 'update' && touches(c.summary, field));
+    // 경쟁 조건 이야기는 '바닥(하한)을 뚫은' 수량에만 맞는다(재고 ≥ 0). 상한(재시작 ≤ 3)에는 쓰지 않는다.
+    const lowerBound = expr.cmp === '>=' || expr.cmp === '>';
     const now = v.values[field];
     // 짧은 시간 안에 몰린 요청 묶음 찾기
     let best: CauseEvent[] = [];
@@ -163,7 +185,7 @@ export function diagnose(v: Violation, inv: Invariant | undefined, causes: Cause
       const group = referencing.filter((c) => c.at >= referencing[i].at && c.at - referencing[i].at <= 1500);
       if (group.length > best.length) best = group;
     }
-    if (best.length >= 2) {
+    if (lowerBound && best.length >= 2) {
       const span = best.at(-1)!.at - best[0].at;
       const coll = best[0].collection;
       return {

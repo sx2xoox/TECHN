@@ -9,7 +9,8 @@ import { IsomorphRuntime } from './runtime.ts';
 import { serve } from './server.ts';
 
 /**
- * isomorph connect <postgres://…|https://…|otel|docker> [--schema s] [--port 4000] [--write low]   설정 파일 없이 바로(읽기 전용)
+ * isomorph connect <postgres://…|https://…|otel|docker|kubernetes> [--schema s] [--port 4000] [--write low]   설정 파일 없이 바로(읽기 전용)
+ *   kubernetes: [--context c] [--kubeconfig f] [--schema 네임스페이스]
  * isomorph study   사용자 실험 서버(STUDY_* 환경변수, scripts/study.ts 와 같음)
  * isomorph snapshot <대상|--config x.json> [--observe 20] [--minutes 10] [--out world.html]   공유본(HTML 한 파일) 만들기
  * isomorph serve   --config isomorph.config.json   세계를 연다
@@ -49,7 +50,7 @@ async function main() {
     targetLike
       ? configFromTarget(
           args.slice(1).filter((a, i, all) => !a.startsWith('--') && !(all[i - 1] ?? '').startsWith('--')),
-          { schema: flag('schema'), port: flag('port') ? Number(flag('port')) : undefined, host: flag('host'), write: flag('write') as never },
+          { schema: flag('schema') ?? flag('namespace'), port: flag('port') ? Number(flag('port')) : undefined, host: flag('host'), write: flag('write') as never, context: flag('context'), kubeconfig: flag('kubeconfig') },
         )
       : loadConfig(configPath);
   if (cmd === 'connect') log(`연결: ${config.adapter.type} · 쓰기 ${config.writeMode}${config.writeMode === 'read-only' ? '(바꾸려면 --write low|medium|high)' : ''}`);

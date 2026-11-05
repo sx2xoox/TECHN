@@ -28,6 +28,9 @@ export const PLACE_GROUPS: PlaceGroup[] = [
   { re: /(product|item|inventor|stock|sku|goods|warehouse|depot|stockroom)/i, sprite: 'warehouse', title: '창고', region: R.market },
   { re: /(customer|user|member|patient|student|person|people|employee|citizen|client|resident|owner|author|subscriber|player|passenger|traveler|traveller|guest|contact|applicant|candidate|participant|attendee|volunteer|donor|tenant|staff|actor|actress|artist|singer|performer|director|composer|writer|creator|contributor)/i, sprite: 'house', title: '집', region: R.residential },
   { re: /(account|wallet|payment|invoice|bank|ledger|budget|fund)/i, sprite: 'bank', title: '은행', region: R.finance },
+  // 인프라의 층위를 모양으로 가른다: 기계(노드·호스트) → 그 위에서 몇 개를 돌릴지 정하는 관리소(디플로이먼트) → 실제로 일하는 공장(파드·컨테이너)
+  { re: w('node', 'host', 'machine', 'vm', 'server', 'cluster'), sprite: 'tower', title: '서버탑', region: R.industrial },
+  { re: w('deployment', 'statefulset', 'daemonset', 'replicaset', 'replica_set', 'autoscaler', 'scale_set'), sprite: 'office', title: '관리소', region: R.industrial },
   { re: /(container|server|node|host|service|pod|machine|instance|worker|cluster|vm|deployment|process|truck|vehicle|tool|workshop|plugin|skill)/i, sprite: 'factory', title: '공장', region: R.industrial },
   { re: /(book|library|article|document|post|page|wiki|course|class|lesson|school|file|memory|note)/i, sprite: 'library', title: '도서관', region: R.civic },
   { re: /(doctor|hospital|ward|clinic|room|bed|nurse)/i, sprite: 'clinic', title: '진료소', region: R.civic },
@@ -91,8 +94,8 @@ export const LANDMARK_RE = /(stat|metric|health|summary|overview|dashboard|confi
 
 /* 필드 의미론 */
 export const LABEL_RE = /^(name|title|label|hostname|display_name|full_name|username|nickname|plate|sku|code|slug)$/i;
-export const STACK_RE = /(stock|quantity|qty|inventor|available|remaining|units|capacity_left|seats|beds_available|copies|balance|free)/i;
-export const RESTOCK_RE = /(stock|inventor|quantity|qty|available|units|copies|seats|beds)/i;
+export const STACK_RE = /(stock|quantity|qty|inventor|available|remaining|units|capacity_left|seats|beds_available|copies|replicas|balance|free)/i;
+export const RESTOCK_RE = /(stock|inventor|quantity|qty|available|units|copies|replicas|seats|beds)/i;
 export const CROWD_RE = /(calls?$|calls_|request|rps|qps|throughput|visitor|traffic|connection|session|online_users|active_users|load|queue|pending|backlog|cpu|usage|utiliz|mem|enrolled|followers|views|count$|used)/i;
 export const FIRE_RE = /(error|fail|exception|crash|incident|alert|restart|reject|drop)/i;
 export const SPEED_RE = /(latency|duration|response_time|delay|_ms$|elapsed|wait|p9\d)/i;
