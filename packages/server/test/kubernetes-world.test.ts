@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { KubernetesAdapter } from '@isomorph/adapters';
 import { startFakeKube, type FakeKube } from '../../adapters/test/fake-kube.ts';
-import { IsomorphRuntime } from '../src/index.ts';
+import { incidentReport, IsomorphRuntime } from '../src/index.ts';
 
 /** Kubernetes → 사람 손 없이 컴파일·검증된 세계 → 규모 조정(미리보기 → 승인 → 확인 → 되돌리기) */
 let kube: FakeKube;
@@ -118,6 +118,23 @@ describe('Kubernetes → world', () => {
       await hi.refresh();
       expect(hi.getActions()[0].status).toBe('verified');
       expect(hi.world!.violations.some((v) => v.pk === 'default/web')).toBe(false); // 회복
+
+      // 장애 기록: 열림(나쁜 배포) → 직전 변경 → 조치(되돌리기, 확인됨) → 닫힘, 그리고 사후 보고서
+      const inc = hi.incidents.all().find((i) => i.rootKey === 'deployments:default/web')!;
+      expect(inc.observedFromStart).toBeUndefined();
+      expect(inc.closedAt).not.toBeNull();
+      expect(inc.change).toEqual([{ field: 'image', now: 'registry.example/app:2.0-broken', to: kube.goodImage }]);
+      expect(inc.actions.map((a) => [a.title, a.status])).toEqual([['직전 변경 되돌리기: image', 'verified']]);
+      expect(inc.timeline.map((s) => s.kind)).toEqual(expect.arrayContaining(['start', 'action', 'verified', 'end']));
+      const report = incidentReport(inc, { system: 'kubernetes', publicUrl: 'https://iso.example.com' });
+      expect(report).toContain('# 장애 기록: web');
+      expect(report).toContain('위반 직전의 변경: `image`');
+      expect(report).toContain(`kubectl set image deployment/web -n default app=${kube.goodImage}`);
+      expect(report).toContain('관측으로 확인됨');
+      expect(report).toContain('https://iso.example.com/?focus=deployments%3Adefault%2Fweb');
+      // 시작할 때 이미 깨져 있던 것들도 기록되지만 '관측 시작 전부터' 로 표시된다
+      expect(hi.incidents.all().filter((i) => i.observedFromStart).length).toBeGreaterThan(0);
+      expect(incidentReport(hi.incidents.all().find((i) => i.observedFromStart)!, { system: 'k' })).toContain('관측을 시작했을 때 이미 진행 중');
     } finally {
       await hi.stop();
     }

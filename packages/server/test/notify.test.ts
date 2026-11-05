@@ -79,6 +79,13 @@ describe('notifications', () => {
     await waitFor(2);
     expect(got[1].body.items[0]).toMatchObject({ phase: 'end', pk: 'default/web' });
     expect(got[1].body.text).toContain('복구 1건');
+    // 그 뒤 장애 종료 요약(근본 원인·영향·조치·사후 보고서 링크)
+    await waitFor(3);
+    const summary = got[2].body as unknown as { text: string; incident: { root: { pk: string }; report: string } };
+    expect(summary.text).toContain('장애 종료');
+    expect(summary.incident.root.pk).toBe('default/web');
+    expect(summary.incident.report).toMatch(/^http:\/\/world\.example:4000\/api\/incidents\/[0-9a-f-]{36}\.md$/);
+    got.splice(2, 1);
 
     // 깜빡임: 되풀이 억제 시간 안에 다시 깨지면 다시 알리지 않는다
     const before = n.stats.suppressed;

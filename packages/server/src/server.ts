@@ -2,10 +2,11 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { WebSocketServer, type WebSocket } from 'ws';
-import type { ClientMessage, ServerMessage, WorldState } from '@isomorph/core';
+import type { ClientMessage, Incident, ServerMessage, WorldState } from '@isomorph/core';
 import type { IsomorphRuntime } from './runtime.ts';
 import { hostHeaderIsLoopback, isLoopback, presentedToken, resolveRole, sameOrigin, sessionCookie, type AuthOptions, type Role } from './auth.ts';
 import { buildWorldBundle, renderSnapshotHtml } from './snapshot.ts';
+import { incidentReport } from './incidents.ts';
 
 export interface ServeOptions {
   port?: number;
@@ -15,6 +16,8 @@ export interface ServeOptions {
   /** 생성된 픽셀 아트 에셋 경로(/assets/*) */
   assetsDir?: string;
   log?: (msg: string) => void;
+  /** 보고서의 '그 시점의 세계' 링크 앞부분(사람들이 세계를 여는 주소) */
+  publicUrl?: string | null;
   /** 운영자 토큰(행동 가능) */
   token?: string;
   /** 관람자 토큰(보기 전용) */
@@ -28,6 +31,9 @@ interface ClientState {
   seekTs: number | null;
   /** 이 접속에서 시뮬레이션이 돌고 있는가 */
   simulating?: boolean;
+  /** 살펴보기 횟수 제한(1초 창) */
+  inspectWindow: number;
+  inspects: number;
 }
 
 const MAX_CONCURRENT_SIMULATIONS = 2;
@@ -107,6 +113,23 @@ export async function serve(runtime: IsomorphRuntime, opts: ServeOptions = {}) {
         return res.end(`공유본을 만들지 못했습니다: ${e instanceof Error ? e.message : e}`);
       }
     }
+    if (url.pathname === '/api/incidents') {
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      return res.end(JSON.stringify(runtime.incidents.all()));
+    }
+    const rep = /^\/api\/incidents\/([0-9a-f-]{36})\.md$/.exec(url.pathname);
+    if (rep) {
+      const inc = runtime.incidents.get(rep[1]);
+      if (!inc) {
+        res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+        return res.end('장애 기록이 없습니다');
+      }
+      // 링크 앞부분: 설정한 공개 주소, 없으면 로컬로 들어온 요청일 때만 그 주소(Host 는 보내는 쪽이 정할 수 있다)
+      const base = opts.publicUrl ?? (req.headers.host && hostHeaderIsLoopback(req) ? `http://${req.headers.host}` : null);
+      const body = incidentReport(inc, { system: runtime.schema?.system ?? 'isomorph', publicUrl: base });
+      res.writeHead(200, { 'content-type': 'text/markdown; charset=utf-8', 'content-disposition': `attachment; filename="incident-${inc.id.slice(0, 8)}.md"`, 'cache-control': 'no-store' });
+      return res.end(body);
+    }
     if (url.pathname === '/api/world') {
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
       return res.end(JSON.stringify(runtime.world));
@@ -153,16 +176,19 @@ export async function serve(runtime: IsomorphRuntime, opts: ServeOptions = {}) {
   runtime.on('actions', onActions);
   runtime.on('grammar', onGrammar);
   runtime.on('toast', onToast);
+  const onIncidents = (incidents: Incident[]) => broadcast({ type: 'incidents', incidents });
+  runtime.on('incidents', onIncidents);
   const timelineTimer = setInterval(() => runtime.status === 'running' && broadcast(runtime.timeline()), 2000);
 
   wss.on('connection', (ws, req) => {
-    const c: ClientState = { ws, seekTs: null, role: resolveRole(req, auth) ?? 'viewer' };
+    const c: ClientState = { ws, seekTs: null, role: resolveRole(req, auth) ?? 'viewer', inspectWindow: 0, inspects: 0 };
     clients.add(c);
     if (runtime.grammar) send(c, { ...runtime.hello(), role: c.role });
     if (runtime.world) send(c, { type: 'world', mode: 'live', world: runtime.world });
     if (runtime.status === 'running') {
       send(c, runtime.timeline());
       send(c, { type: 'actions', actions: runtime.getActions() });
+      send(c, { type: 'incidents', incidents: runtime.incidents.all() });
     }
     ws.on('close', () => clients.delete(c));
     ws.on('message', async (data) => {
@@ -180,6 +206,13 @@ export async function serve(runtime: IsomorphRuntime, opts: ServeOptions = {}) {
       try {
         switch (msg.type) {
           case 'inspect': {
+            // 살펴보기는 사슬·연결을 계산하므로 비싸다: 접속마다 초당 20번까지만
+            const now = Date.now();
+            if (now - c.inspectWindow > 1000) {
+              c.inspectWindow = now;
+              c.inspects = 0;
+            }
+            if (++c.inspects > 20) return;
             const m = runtime.inspect(msg.entityId, c.seekTs ?? undefined);
             if (c.role === 'viewer') m.affordances = m.affordances.map((a) => ({ ...a, allowed: false, reason: '보기 전용 접속입니다' }));
             send(c, m);
@@ -264,6 +297,7 @@ export async function serve(runtime: IsomorphRuntime, opts: ServeOptions = {}) {
       runtime.off('actions', onActions);
       runtime.off('grammar', onGrammar);
       runtime.off('toast', onToast);
+      runtime.off('incidents', onIncidents);
       runtime.off('status', onStatus);
       for (const c of clients) c.ws.terminate();
       await new Promise<void>((resolve) => wss.close(() => resolve()));

@@ -135,6 +135,7 @@ async function main() {
     assetsDir: config.assetsDir,
     token: config.token ?? process.env.ISOMORPH_TOKEN,
     viewerToken: config.viewerToken ?? process.env.ISOMORPH_VIEWER_TOKEN,
+    publicUrl: flag('public-url') ?? config.publicUrl ?? process.env.ISOMORPH_PUBLIC_URL ?? null,
     log,
   });
   // 알림: 법칙이 새로 깨지면 웹훅으로(링크는 그 개체·그 시점의 세계)

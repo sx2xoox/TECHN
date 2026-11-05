@@ -47,11 +47,14 @@ const rt = new IsomorphRuntime({
 const srv = await serve(rt, { port: Number(arg('port') ?? 0), staticDir: path.join(root, 'packages/client/dist') });
 // 알림을 받는 쪽(Slack 대신 작은 웹훅)
 const alerts: NotifyItem[] = [];
+const summaries: { text: string; incident: { id: string; report: string | null } }[] = [];
 const hook = http.createServer((req, res) => {
   let b = '';
   req.on('data', (c) => (b += c));
   req.on('end', () => {
-    alerts.push(...(JSON.parse(b) as { items: NotifyItem[] }).items);
+    const body = JSON.parse(b) as { items?: NotifyItem[]; text: string; incident?: { id: string; report: string | null } };
+    if (body.items) alerts.push(...body.items);
+    if (body.incident) summaries.push({ text: body.text, incident: body.incident });
     res.writeHead(204).end();
   });
 });
@@ -170,6 +173,27 @@ try {
   assert(after.failed === 0, `되돌린 뒤 payments·web 호출이 다시 성공(실패 ${after.failed}/6)`);
   await notifier.flush();
   assert(alerts.some((a) => a.phase === 'end' && a.entityId === 'k8s_deployments:shop/payments'), "알림으로 근본 원인의 '복구' 가 감");
+
+  // 장애 기록: 서비스가 회복하면(최근 1분의 오류 비율이 내려가면) 장애가 닫히고 요약과 사후 보고서가 남는다
+  const isClosed = () => rt.incidents.all().some((i) => i.rootKey === 'k8s_deployments:shop/payments' && i.closedAt !== null);
+  for (let i = 0; i < 120 && !isClosed(); i++) await new Promise((r) => setTimeout(r, 500));
+  assert(isClosed(), '서비스까지 회복하자 장애(근본 원인: 클러스터의 payments)가 닫힘');
+  const inc = rt.incidents.all().find((i) => i.rootKey === 'k8s_deployments:shop/payments')!;
+  assert(new Set(inc.violations.map((v) => `${v.collection}:${v.pk}`)).size === 3, `장애 하나에 번진 위반이 모두 묶임(디플로이먼트·payments·web)`);
+  await notifier.flush();
+  for (let i = 0; i < 20 && !summaries.some((s) => s.incident.id === inc.id); i++) await new Promise((r) => setTimeout(r, 100));
+  const summary = summaries.find((s) => s.incident.id === inc.id);
+  assert(summary?.text.includes('장애 종료') && summary.incident.report?.endsWith(`/api/incidents/${inc.id}.md`), '장애가 닫히자 요약 알림(근본 원인·조치·사후 보고서 링크)이 감');
+  await page.locator('#topbar button.incidents').click();
+  await page.waitForSelector('#incidents:not(.hidden) .incident.closed', { timeout: 10_000 });
+  const card = (await page.locator('#incidents .incident.closed').first().textContent()) ?? '';
+  assert(card.includes('payments') && card.includes('직전 변경 되돌리기: image ✓') && card.includes('직전 변경'), `장애 기록 창: 근본 원인·직전 변경·확인된 조치가 보임`);
+  await page.locator('#incidents .incident.closed').first().locator('button', { hasText: '타임라인' }).click();
+  await page.waitForTimeout(400);
+  if (shotsDir) await page.screenshot({ path: path.join(shotsDir, '29-incident.png') });
+  const report = await (await fetch(`${srv.url}/api/incidents/${inc.id}.md`)).text();
+  assert(['# 장애 기록: payments', '근본 원인', '위반 직전의 변경', 'kubectl set image deployment/payments', '관측으로 확인됨', '## 타임라인', '?focus='].every((x) => report.includes(x)), '사후 보고서(마크다운): 근본 원인·직전 변경·실행한 명령·확인·타임라인·그 시점 링크');
+  if (shotsDir) fs.writeFileSync(path.join(shotsDir, 'incident-report.md'), report);
   assert(errors.length === 0, `브라우저 오류 없음${errors.length ? `: ${errors.join(' | ')}` : ''}`);
   console.log('\n한 세계 시험 통과 ✅');
   if (keep) await new Promise(() => {});

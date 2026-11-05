@@ -206,7 +206,51 @@ export interface SimulationMessage {
   result: SimulationResult;
 }
 
+/* ─────────────── 장애 기록(같은 근본 원인에서 번진 위반 묶음) ─────────────── */
+
+export interface IncidentViolation {
+  key: string;
+  title: string;
+  severity: Violation['severity'];
+  collection: string;
+  pk: string;
+  entityId: string | null;
+  label: string;
+  start: number;
+  end: number | null;
+  diagnosis: string | null;
+}
+
+export interface IncidentStep {
+  at: number;
+  kind: 'start' | 'end' | 'action' | 'verified' | 'failed' | 'undone';
+  text: string;
+  entityId: string | null;
+}
+
+export interface Incident {
+  id: string;
+  /** 관측을 시작했을 때 이미 깨져 있던 것으로 열렸다(실제 시작 시각은 모른다) */
+  observedFromStart?: boolean;
+  openedAt: number;
+  closedAt: number | null;
+  /** 근본 원인의 키(collection:pk) */
+  rootKey: string;
+  root: { collection: string; pk: string; entityId: string | null; label: string; violation: string; crossSystem: boolean };
+  /** 근본 원인이 위반 직전에 받은 변경 */
+  change: { field: string; now: unknown; to: unknown }[] | null;
+  violations: IncidentViolation[];
+  actions: { id: string; at: number; title: string; entityId: string; commandText: string[]; status: ActionRecord['status'] }[];
+  timeline: IncidentStep[];
+}
+
+export interface IncidentsMessage {
+  type: 'incidents';
+  incidents: Incident[];
+}
+
 export type ServerMessage =
+  | IncidentsMessage
   | LabMessage
   | SimulationProgressMessage
   | SimulationMessage

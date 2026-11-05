@@ -211,3 +211,17 @@ ul.issues pre { margin: 2px 0 0; color: var(--muted); white-space: pre-wrap; }
 
 /* 색각 미리보기 켜짐 */
 #topbar .btn.active { border-color: #f2c94c; color: #ffe8a8; }
+
+/* 장애 기록 */
+#incidents { background: var(--panel); }
+#incidents .incident { border: 1px solid #4a3f55; padding: 8px 10px; margin: 8px 0; line-height: 1.5; }
+#incidents .incident.live { border-color: #e61919; background: rgba(230, 25, 25, 0.08); }
+#incidents .incident .row { display: flex; gap: 6px; align-items: center; margin: 4px 0; flex-wrap: wrap; }
+#incidents .dot.bad { color: #e61919; }
+#incidents .dot.ok { color: #358d4b; }
+#incidents a.btn { text-decoration: none; display: inline-block; color: #fff6d5; border: 1px solid #6a5d7a; padding: 2px 8px; }
+#incidents .timeline-steps { list-style: none; padding: 0; margin: 6px 0 0; font-size: 11px; }
+#incidents .timeline-steps li { padding: 2px 0; border-bottom: 1px solid #3a3343; }
+#incidents .timeline-steps li.verified { color: #9fe0a8; }
+#incidents .timeline-steps li.start { color: #ffb3a8; }
+#topbar .btn.alert { background: #e61919; color: #fff; border-color: #ff8a80; }

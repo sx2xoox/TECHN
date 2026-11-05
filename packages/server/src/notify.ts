@@ -1,4 +1,5 @@
-import type { Diagnosis, Violation } from '@isomorph/core';
+import type { Diagnosis, Incident, Violation } from '@isomorph/core';
+import { duration } from './incidents.ts';
 import { redact, type IsomorphRuntime, type ViolationEvent } from './runtime.ts';
 
 /**
@@ -49,6 +50,8 @@ export interface NotifyPayload {
   system: string;
   text: string;
   items: NotifyItem[];
+  /** 한 메시지에 다 싣지 못한 수 */
+  more?: number;
 }
 
 const SEV = { info: 0, warning: 1, critical: 2 } as const;
@@ -70,14 +73,17 @@ export function deepLink(publicUrl: string, entityId: string | null, at?: number
 
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
-export function formatText(system: string, items: NotifyItem[], style: 'slack' | 'plain'): string {
+/** 데이터 속 마크다운이 Discord 에서 링크·강조가 되지 않게(우리가 다는 링크는 그대로) */
+const discordSafe = (s: string) => s.replace(/[\\*_~`|>#[\]()]/g, (c) => `\\${c}`);
+
+export function formatText(system: string, items: NotifyItem[], style: 'slack' | 'plain' | 'discord', more = 0): string {
   const starts = items.filter((i) => i.phase === 'start');
   const ends = items.filter((i) => i.phase === 'end');
   const head = [starts.length ? `법칙 위반 ${starts.length}건` : '', ends.length ? `복구 ${ends.length}건` : ''].filter(Boolean).join(' · ');
   const link = (url: string | null, label: string) => (!url ? '' : style === 'slack' ? ` <${url}|${label}>` : ` ${label}: ${url}`);
   // 데이터에서 온 글자는 Slack 문법(<!channel> 멘션, <링크|글>)으로 해석되지 않게 막는다
-  const t = (s: string) => (style === 'slack' ? s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') : s);
-  const lines = [`ISOMORPH · ${t(system)} — ${head}`];
+  const t = (s: string) => (style === 'slack' ? s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') : style === 'discord' ? discordSafe(s) : s);
+  const lines = [`ISOMORPH · ${t(system)} — ${head}${more ? ` (그 밖에 ${more}건은 세계에서 확인)` : ''}`];
   for (const i of starts) {
     lines.push(`${i.severity === 'critical' ? '🔴' : '🟠'} ${t(i.title)} — ${t(i.collection)} #${t(i.pk)}${link(i.link, '세계에서 보기')}`);
     if (i.root) lines.push(`    근본 원인(${i.root.hops}단계 위): ${t(i.root.label)} — ${t(i.root.collection)} #${t(i.root.pk)} · ${t(i.root.violation)}${i.root.crossSystem ? ' [다른 시스템]' : ''}${link(i.root.link, '근본 원인 보기')}`);
@@ -89,14 +95,46 @@ export function formatText(system: string, items: NotifyItem[], style: 'slack' |
 }
 
 export function formatPayload(format: 'slack' | 'discord' | 'json', p: NotifyPayload): unknown {
-  if (format === 'slack') return { text: formatText(p.system, p.items, 'slack') };
-  if (format === 'discord') return { content: clip(formatText(p.system, p.items, 'plain'), 1900), allowed_mentions: { parse: [] } };
-  return { text: formatText(p.system, p.items, 'plain'), system: p.system, items: p.items };
+  if (format === 'slack') return { text: formatText(p.system, p.items, 'slack', p.more) };
+  if (format === 'discord') return { content: clip(formatText(p.system, p.items, 'discord', p.more), 1900), allowed_mentions: { parse: [] } };
+  return { text: formatText(p.system, p.items, 'plain', p.more), system: p.system, items: p.items, ...(p.more ? { more: p.more } : {}) };
+}
+
+export function formatIncidentText(system: string, inc: Incident, report: string | null, style: 'slack' | 'plain' | 'discord'): string {
+  const t = (s: string) => (style === 'slack' ? s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') : style === 'discord' ? discordSafe(s) : s);
+  const took = inc.closedAt ? duration(inc.closedAt - inc.openedAt) : '';
+  const places = new Set(inc.violations.map((v) => `${v.collection}:${v.pk}`)).size;
+  const fixes = inc.actions.filter((a) => a.status === 'verified' || a.status === 'applied').map((a) => `${t(a.title)}${a.status === 'verified' ? '(확인됨)' : ''}`);
+  const lines = [`✅ 장애 종료(${took}) — ISOMORPH · ${t(system)}`];
+  lines.push(`    근본 원인: ${t(inc.root.label)} — ${t(inc.root.collection)} #${t(inc.root.pk)} · ${t(inc.root.violation)}${inc.root.crossSystem ? ' [다른 시스템]' : ''}`);
+  lines.push(`    영향 ${places}곳 · 조치: ${fixes.length ? fixes.join(', ') : '없음(저절로 회복)'}`);
+  if (report) lines.push(style === 'slack' ? `    <${report}|사후 보고서>` : `    사후 보고서: ${report}`);
+  return lines.join('\n');
+}
+
+export function formatPayloadIncident(format: 'slack' | 'discord' | 'json', system: string, inc: Incident, report: string | null): unknown {
+  if (format === 'slack') return { text: formatIncidentText(system, inc, report, 'slack') };
+  if (format === 'discord') return { content: clip(formatIncidentText(system, inc, report, 'discord'), 1900), allowed_mentions: { parse: [] } };
+  return { text: formatIncidentText(system, inc, report, 'plain'), system, incident: { id: inc.id, openedAt: inc.openedAt, closedAt: inc.closedAt, root: inc.root, change: inc.change, actions: inc.actions.map((a) => ({ title: a.title, status: a.status, at: a.at })), report } };
+}
+
+const MAX_ITEMS = 20;
+
+/** 주소 검사(오류 문구에 주소를 싣지 않는다: 웹훅 주소에는 비밀 토큰이 들어 있다) */
+function httpUrl(value: string, what: string): URL {
+  let u: URL;
+  try {
+    u = new URL(value);
+  } catch {
+    throw new Error(`${what}가 올바른 주소가 아닙니다(https://… 형태여야 합니다)`);
+  }
+  if (u.protocol !== 'https:' && u.protocol !== 'http:') throw new Error(`${what}는 http(s) 주소여야 합니다`);
+  return u;
 }
 
 export function attachNotifier(rt: IsomorphRuntime, opts: NotifyOptions) {
-  const u = new URL(opts.webhook);
-  if (u.protocol !== 'https:' && u.protocol !== 'http:') throw new Error('알림 웹훅은 http(s) 주소여야 합니다');
+  httpUrl(opts.webhook, '알림 웹훅');
+  if (opts.publicUrl) httpUrl(opts.publicUrl, '공개 주소(--public-url)');
   const format = !opts.format || opts.format === 'auto' ? detectFormat(opts.webhook) : opts.format;
   const log = opts.log ?? (() => {});
   const min = SEV[opts.minSeverity ?? 'warning'];
@@ -136,38 +174,53 @@ export function attachNotifier(rt: IsomorphRuntime, opts: NotifyOptions) {
     timer = null;
     const batch = pending.splice(0);
     if (!batch.length) return inflight;
-    const items: NotifyItem[] = batch.map((e) => {
-      const v = e.violation;
-      if (e.phase === 'start') notified.set(key(v), e.ts);
-      // 진단·근본 원인은 지금 세계에서 계산한다(살펴보기와 같은 결과, 민감 값은 가려짐)
-      const ins = e.phase === 'start' && e.entityId ? rt.inspect(e.entityId) : null;
-      const diag = ins?.diagnosis ?? null;
-      const last = ins?.chain?.at(-1);
-      const root = last
-        ? { collection: last.collection, pk: String(last.pk), entityId: last.entityId, label: last.label, violation: last.violation, crossSystem: ins!.chain!.some((s) => s.crossSystem), hops: ins!.chain!.length, link: opts.publicUrl && last.entityId ? deepLink(opts.publicUrl, last.entityId, e.ts) : null }
-        : null;
-      return {
-        phase: e.phase,
-        at: e.ts,
-        title: v.title,
-        severity: v.severity,
-        collection: v.collection,
-        pk: String(v.pk),
-        entityId: e.entityId,
-        values: v.values,
-        diagnosis: diag ? { pattern: diag.pattern, title: diag.title, detail: diag.detail } : null,
-        link: opts.publicUrl ? deepLink(opts.publicUrl, e.entityId, e.phase === 'start' ? e.ts : undefined) : null,
-        root,
-        change: (last?.entityId ? rt.inspect(last.entityId).revert?.changes : ins?.revert?.changes) ?? null,
-      };
-    });
-    const payload = formatPayload(format, { system: rt.schema?.system ?? 'isomorph', text: '', items });
+    for (const e of batch) if (e.phase === 'start') notified.set(key(e.violation), e.ts);
+    // 한꺼번에 많이 깨지면: 시작을 먼저, 메시지 하나에 MAX_ITEMS 개까지만 싣고(진단 계산도 그만큼만) 나머지는 수로
+    const ordered = [...batch.filter((e) => e.phase === 'start'), ...batch.filter((e) => e.phase === 'end')];
+    const shown = ordered.slice(0, MAX_ITEMS);
+    const more = ordered.length - shown.length;
+    let items: NotifyItem[];
+    try {
+      items = shown.map((e) => {
+        const v = e.violation;
+        // 진단·근본 원인은 지금 세계에서 계산한다(살펴보기와 같은 결과, 민감 값은 가려짐)
+        const ins = e.phase === 'start' && e.entityId ? rt.inspect(e.entityId) : null;
+        const diag = ins?.diagnosis ?? null;
+        const last = ins?.chain?.at(-1);
+        const root = last
+          ? { collection: last.collection, pk: String(last.pk), entityId: last.entityId, label: last.label, violation: last.violation, crossSystem: ins!.chain!.some((s) => s.crossSystem), hops: ins!.chain!.length, link: opts.publicUrl && last.entityId ? deepLink(opts.publicUrl, last.entityId, e.ts) : null }
+          : null;
+        return {
+          phase: e.phase,
+          at: e.ts,
+          title: v.title,
+          severity: v.severity,
+          collection: v.collection,
+          pk: String(v.pk),
+          entityId: e.entityId,
+          values: v.values,
+          diagnosis: diag ? { pattern: diag.pattern, title: diag.title, detail: diag.detail } : null,
+          link: opts.publicUrl ? deepLink(opts.publicUrl, e.entityId, e.phase === 'start' ? e.ts : undefined) : null,
+          root,
+          change: (last?.entityId ? rt.inspect(last.entityId).revert?.changes : ins?.revert?.changes) ?? null,
+        };
+      });
+    } catch (err) {
+      // 알림 준비가 실패해도 세계(서버)는 멈추지 않는다
+      stats.failed++;
+      log(`알림 준비 실패: ${redact(String((err as Error)?.message ?? err))}`);
+      return inflight;
+    }
+    return post(formatPayload(format, { system: rt.schema?.system ?? 'isomorph', text: '', items, more }), `${items.length}건${more ? ` 외 ${more}건` : ''}`);
+  };
+
+  const post = (payload: unknown, what: string) => {
     inflight = inflight.then(async () => {
       try {
         const r = await doFetch(opts.webhook, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload), signal: AbortSignal.timeout(5000) });
         if (!r.ok) throw new Error(`응답 ${r.status}`);
         stats.sent++;
-        log(`알림 보냄: ${items.length}건`);
+        log(`알림 보냄: ${what}`);
       } catch (err) {
         stats.failed++;
         // 웹훅 주소는 비밀(토큰이 들어 있다): 오류 문구에서도 지운다
@@ -177,7 +230,28 @@ export function attachNotifier(rt: IsomorphRuntime, opts: NotifyOptions) {
     return inflight;
   };
 
+  /** 장애가 닫히면 요약: 얼마나 갔는지, 근본 원인, 조치, 사후 보고서 링크(알렸던 위반이 있었던 장애만) */
+  const onIncidentClosed = (inc: Incident) => {
+    if (!inc.violations.some((v) => notified.has(v.key))) return;
+    const report = opts.publicUrl ? new URL(`api/incidents/${inc.id}.md`, opts.publicUrl.endsWith('/') ? opts.publicUrl : `${opts.publicUrl}/`).toString() : null;
+    // 같은 순간의 '복구' 알림이 먼저 가도록: 이번 관측의 사건이 다 쌓인 뒤 묶음을 보내고, 그 다음에 요약
+    const job = () => {
+      summaries.delete(timer);
+      void flush();
+      try {
+        void post(formatPayloadIncident(format, rt.schema?.system ?? 'isomorph', inc, report), '장애 종료 요약');
+      } catch (err) {
+        stats.failed++;
+        log(`알림 준비 실패: ${redact(String((err as Error)?.message ?? err))}`);
+      }
+    };
+    const timer = setTimeout(job, 0);
+    summaries.set(timer, job);
+  };
+  const summaries = new Map<NodeJS.Timeout, () => void>();
+
   rt.on('violation', onViolation);
+  rt.on('incident-closed', onIncidentClosed);
   return {
     stats,
     format,
@@ -185,6 +259,12 @@ export function attachNotifier(rt: IsomorphRuntime, opts: NotifyOptions) {
     flush,
     async stop() {
       rt.off('violation', onViolation);
+      rt.off('incident-closed', onIncidentClosed);
+      // 기다리던 요약은 버리지 않고 지금 보낸 뒤 끝낸다
+      for (const [t, job] of summaries) {
+        clearTimeout(t);
+        job();
+      }
       await flush();
     },
   };

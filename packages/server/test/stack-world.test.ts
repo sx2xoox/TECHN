@@ -103,6 +103,14 @@ describe('one world for the cluster and its services', () => {
     expect(rt.inspect('k8s_deployments:shop/payments').chain ?? []).toEqual([]);
   });
 
+  it('records one incident for the whole spread: the deployment, payments and web share a root cause', () => {
+    const open = rt.incidents.all().filter((i) => i.closedAt === null && !i.observedFromStart);
+    expect(open).toHaveLength(1);
+    expect(open[0].rootKey).toBe('k8s_deployments:shop/payments');
+    expect(open[0].root.crossSystem).toBe(false); // 근본 원인은 자기 자신(첫 위반)
+    expect(open[0].violations.map((v) => `${v.collection}:${v.pk}`).sort()).toEqual(['k8s_deployments:shop/payments', 'otel_services:payments', 'otel_services:web']);
+  });
+
   it('acts on the right system: scaling goes to Kubernetes, the trace side stays read-only', () => {
     expect(rt.grammar!.affordances.map((a) => a.id)).toEqual(['k8s_deployments_restock']);
     const dr = rt.dryRun('k8s_deployments:shop/payments', 'k8s_deployments_restock');

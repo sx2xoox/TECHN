@@ -8,3 +8,4 @@ export * from './study.ts';
 export * from './study-analysis.ts';
 export * from './snapshot.ts';
 export * from './notify.ts';
+export * from './incidents.ts';

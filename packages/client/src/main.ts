@@ -5,6 +5,7 @@ import { embeddedBundle, LocalServer } from './local.ts';
 import { Connection, wsUrl } from './net.ts';
 import { stressHello, stressWorld } from './stress.ts';
 import { h } from './ui/dom.ts';
+import { IncidentsPanel } from './ui/incidents.ts';
 import { LabPanel, SimPlayer } from './ui/lab.ts';
 import { dryRunModal, ModalRoot, Screen, verificationModal } from './ui/modals.ts';
 import { ActionLog, countViolations, Inspector, LegendPanel, Toasts, Tooltip, Topbar } from './ui/panels.ts';
@@ -118,7 +119,22 @@ async function main() {
     if (state.world) onWorld(state.world, 'live');
   }
 
+  const incidents = new IncidentsPanel(
+    {
+      onClose: () => incidents.toggle(false),
+      onJump: (at, entityId) => {
+        // 알림 링크와 같은 길: 그 시점으로 되감은 뒤 근본 원인을 연다
+        deepLink = entityId ? { id: entityId, at, seeking: true } : null;
+        send({ type: 'seek', ts: at });
+      },
+    },
+    !embeddedBundle(),
+  );
   const topbar = new Topbar({
+    onIncidents: () => {
+      lab.toggle(false);
+      incidents.toggle();
+    },
     onShare: () => {
       const a = document.createElement('a');
       a.href = '/api/snapshot?minutes=10';
@@ -132,6 +148,7 @@ async function main() {
       topbar.setVision(next === 'normal' ? '일반' : VISION_KO[next], next !== 'normal');
     },
     onLab: () => {
+      incidents.toggle(false);
       const open = !lab.visible;
       legend.toggle(false);
       lab.toggle(open);
@@ -165,7 +182,7 @@ async function main() {
     },
   });
 
-  app.append(topbar.el, stage, legend.el, lab.el, inspector.el, actions.el, timeline.el, timeline.bannerEl, player.el, tooltip.el, toasts.el, modal.el, screen.el);
+  app.append(topbar.el, stage, legend.el, lab.el, incidents.el, inspector.el, actions.el, timeline.el, timeline.bannerEl, player.el, tooltip.el, toasts.el, modal.el, screen.el);
   await town.init(stage);
 
   function select(id: string | null) {
@@ -274,6 +291,9 @@ async function main() {
         return onDryRun(m);
       case 'actions':
         return actions.render(m.actions);
+      case 'incidents':
+        incidents.set(m.incidents);
+        return topbar.setIncidents(m.incidents.filter((i) => i.closedAt === null).length, m.incidents.length);
       case 'lab':
         return lab.setLab(m.model, m.hypotheses);
       case 'simulation-progress':

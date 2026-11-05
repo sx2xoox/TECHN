@@ -51,6 +51,7 @@ import {
 import { compile, type CompileOptions, type CompileRound } from '@isomorph/compiler';
 import { ConflictError, type Adapter } from '@isomorph/adapters';
 import { EventStore } from './eventstore.ts';
+import { IncidentBook } from './incidents.ts';
 
 /**
  * 화면(모든 접속)에 나가는 오류 문구에서 비밀을 지운다: URL 의 사용자·비밀번호, 쿼리 문자열(api_key 등).
@@ -150,7 +151,11 @@ export class IsomorphRuntime extends EventEmitter {
     this.pollMs = opts.pollMs ?? 500;
     this.store = new EventStore(opts.storePath ?? ':memory:');
     this.log = opts.log ?? (() => {});
+    this.incidents = new IncidentBook(this);
   }
+
+  /** 장애 기록(같은 근본 원인에서 번진 위반 묶음, 조치·회복까지) */
+  readonly incidents: IncidentBook;
 
   /** 연결 → 스키마 → 컴파일 → 검증. 검증에 실패하면 세계를 열지 않는다. */
   async start(): Promise<RuntimeStatus> {

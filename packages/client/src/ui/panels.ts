@@ -15,6 +15,8 @@ export interface TopbarHandlers {
   onZoom(dir: number): void;
   onVerification(): void;
   onNextViolation(): void;
+  /** 장애 기록 창 */
+  onIncidents(): void;
 }
 
 export class Topbar {
@@ -27,12 +29,14 @@ export class Topbar {
   private fps = h('span', { class: 'chip fps hidden' });
   private share = h('button', { class: 'btn hidden', title: '최근 10분의 세계를 HTML 한 파일로 내려받습니다(서버 없이 열리고, 민감 정보는 가명 처리)' }, '공유본');
   private vision = h('button', { class: 'btn', title: '색각 이상이 있는 사람에게 세계가 어떻게 보이는지 미리보기(근사)' }, '색각: 일반');
+  private incidents = h('button', { class: 'btn incidents hidden', title: '같은 근본 원인에서 번진 위반 묶음 · 조치 · 회복 · 사후 보고서' }, '장애 기록');
 
   constructor(private hnd: TopbarHandlers) {
     this.verify.addEventListener('click', () => hnd.onVerification());
     this.viol.addEventListener('click', () => hnd.onNextViolation());
     this.vision.addEventListener('click', () => hnd.onVision());
     this.share.addEventListener('click', () => hnd.onShare());
+    this.incidents.addEventListener('click', () => hnd.onIncidents());
     this.el.append(
       h('div', { class: 'brand' }, h('span', { class: 'logo' }, '◆'), 'ISOMORPH'),
       this.title,
@@ -42,6 +46,7 @@ export class Topbar {
       this.viol,
       this.write,
       this.fps,
+      this.incidents,
       h('button', { class: 'btn lab', onclick: () => hnd.onLab(), title: '가설 실험실' }, '가설 실험실'),
       this.share,
       this.vision,
@@ -51,6 +56,13 @@ export class Topbar {
       h('button', { class: 'btn icon', onclick: () => hnd.onZoom(-1), title: '축소' }, '−'),
     );
     this.setConnection('connecting');
+  }
+
+  /** 장애가 하나라도 있으면 보인다. 진행 중이면 빨갛게 */
+  setIncidents(open: number, total: number) {
+    this.incidents.classList.toggle('hidden', total === 0);
+    this.incidents.classList.toggle('alert', open > 0);
+    this.incidents.textContent = open ? `장애 진행 ${open}` : `장애 기록 ${total}`;
   }
 
   setVision(label: string, active: boolean) {
