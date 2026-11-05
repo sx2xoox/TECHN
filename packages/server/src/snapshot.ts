@@ -43,10 +43,19 @@ export function buildWorldBundle(rt: IsomorphRuntime, opts: { minutes?: number }
     for (const f of s) if (f in out) out[f] = pseudo(out[f]) as Row[string];
     return out;
   };
+  // 관측 창 밖에서 확인한 참조 대상 값도 같은 규칙으로: 대상 필드나 그것을 가리키는 필드가 민감하면 같은 가명으로
+  // (행의 가명과 같아야 '대상 없음' 법칙이 공유본에서도 그대로 맞는다)
+  const sensitiveTarget = (key: string) => {
+    const [c, f] = [key.slice(0, key.lastIndexOf('.')), key.slice(key.lastIndexOf('.') + 1)];
+    return !!sensitive.get(c)?.has(f) || rt.schema!.collections.some((col) => col.fields.some((x) => x.sensitive && x.ref?.collection === c && x.ref.field === f));
+  };
+  const outside = rt.lastSnapshot?.outside
+    ? Object.fromEntries(Object.entries(rt.lastSnapshot.outside).map(([k, vals]) => [k, sensitiveTarget(k) ? vals.map((v) => pseudo(v)) : vals]))
+    : undefined;
   const cleanBase: Snapshot = {
     ts: base.ts,
     collections: Object.fromEntries(Object.entries(base.collections).map(([c, rows]) => [c, rows.map((r) => clean(c, r)!)])),
-    ...(rt.lastSnapshot?.outside ? { outside: rt.lastSnapshot.outside } : {}),
+    ...(outside ? { outside } : {}),
   };
   const cleanEvents = events.map((e) => ({ ...e, before: clean(e.collection, e.before), after: clean(e.collection, e.after) }));
   const hello: HelloMessage = { ...rt.hello(), writeMode: 'read-only', role: 'viewer', push: false, assets: null };
@@ -66,5 +75,6 @@ export function renderSnapshotHtml(bundle: WorldBundle, viewerDir: string): stri
   // 자료는 JSON 으로: '</' 를 막아 스크립트 블록을 빠져나가지 못하게 한다
   const data = JSON.stringify(bundle).replace(/</g, '\\u003c');
   const title = `${bundle.hello.grammar.title} — 공유본 ${new Date(bundle.end).toLocaleString('ko-KR')}`.replace(/[<>&"]/g, '');
-  return inline.replace('<title>', `<title>${title} · `).replace('</head>', `<script id="isomorph-snapshot" type="application/json">${data}</script>\n</head>`);
+  // 함수 치환: 시스템 자료 속 '$`', '$&' 같은 글자가 치환 패턴으로 해석되지 않게
+  return inline.replace('<title>', () => `<title>${title} · `).replace('</head>', () => `<script id="isomorph-snapshot" type="application/json">${data}</script>\n</head>`);
 }

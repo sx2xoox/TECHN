@@ -25,8 +25,12 @@ export function findRevert(v: Violation, events: ChangeEvent[], schema: SystemSc
   const col = schema.collections.find((c) => c.name === v.collection);
   if (!col || !inv || !ROW_LOCAL.has(inv.expr.op)) return null;
   const lawFields = new Set(fieldsOfExpr(inv.expr));
+  // 시각·버전 같은 장부 필드는 '변경' 이 아니라 기록이다: 되돌리지 않는다(낙관적 잠금 카운터를 되감으면 오히려 위험)
+  const BOOKKEEPING = /^(created|updated|modified|changed|inserted|deleted)(_at|_on|_time|_by)?$|(^|_)(version|revision|lock|etag|xmin|row_version|seq)$/i;
   const writable = new Set(
-    col.fields.filter((f) => !f.readOnly && !f.sensitive && f.name !== col.primaryKey && !lawFields.has(f.name) && !f.ref?.blame && f.type !== 'json').map((f) => f.name),
+    col.fields
+      .filter((f) => !f.readOnly && !f.sensitive && f.name !== col.primaryKey && !lawFields.has(f.name) && !f.ref?.blame && f.type !== 'json' && f.type !== 'timestamp' && !BOOKKEEPING.test(f.name))
+      .map((f) => f.name),
   );
   if (!writable.size) return null;
   const self = events.filter((e) => e.collection === v.collection && String(e.pk) === String(v.pk)).sort((a, b) => a.ts - b.ts);

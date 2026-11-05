@@ -198,7 +198,16 @@ export function project(snapshot: Snapshot, grammar: WorldGrammar, schema: Syste
         link = { role, target: null, missing: v !== null && v !== undefined };
       } else {
         const targetKind = grammar.kinds.find((k) => k.collection === field.ref!.collection && k.archetype !== 'npc');
-        const target = targetKind ? entityId(targetKind.id, v as Pk) : null;
+        // 대상의 기본키로 잇는다. 참조가 기본키가 아닌 필드(이메일 등)를 가리키면 그 행을 찾아 기본키를 쓴다.
+        // 못 찾으면 비워 둔다: 참조 값을 그대로 개체 id 에 넣으면 민감한 값이 모든 화면으로 새고, 가리키는 곳도 틀린다.
+        const targetCol = findCollection(schema, field.ref.collection);
+        let targetPk: Pk | undefined;
+        if (targetCol && field.ref.field === targetCol.primaryKey) targetPk = v as Pk;
+        else if (targetCol) {
+          const r = (snapshot.collections[targetCol.name] ?? []).find((x) => String(x[field.ref!.field]) === String(v));
+          if (r) targetPk = pkOf(r, targetCol);
+        }
+        const target = targetKind && targetPk !== undefined ? entityId(targetKind.id, targetPk) : null;
         link = { role, target, missing: !target || !shownIds.has(target) };
       }
       entity.links.push(link);

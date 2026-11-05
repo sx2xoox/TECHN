@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
@@ -49,6 +49,8 @@ interface Conn {
   exec?: ExecConfig;
   tokenExpires?: number;
   tokenFile?: string;
+  /** kubeconfig 가 있는 폴더(인증 플러그인의 상대 경로 기준) */
+  dir?: string;
 }
 
 type K8sObject = { metadata: { name: string; namespace?: string; uid: string; resourceVersion: string; creationTimestamp?: string; ownerReferences?: { kind: string; name: string }[]; labels?: Record<string, string> }; spec?: Record<string, unknown>; status?: Record<string, unknown> } & Record<string, unknown>;
@@ -77,6 +79,7 @@ export function loadKubeconfig(opts: KubernetesAdapterOptions): Conn {
   const user = (cfg.users ?? []).find((u: { name: string }) => u.name === ctx.user)?.user ?? {};
   if (!cluster?.server) throw new Error(`kubeconfig 에서 클러스터 ${ctx.cluster ?? ''} 의 주소를 찾지 못했습니다: ${file}`);
   return {
+    dir: path.dirname(file),
     server: String(cluster.server).replace(/\/$/, ''),
     ca: b64(cluster['certificate-authority-data']) ?? (cluster['certificate-authority'] ? fs.readFileSync(rel(cluster['certificate-authority'])) : undefined),
     insecure: !!cluster['insecure-skip-tls-verify'],
@@ -89,16 +92,31 @@ export function loadKubeconfig(opts: KubernetesAdapterOptions): Conn {
 }
 
 /** client.authentication.k8s.io ExecCredential: 플러그인을 실행해 토큰(또는 인증서)을 받는다 */
-function runExec(conn: Conn) {
+/**
+ * client.authentication.k8s.io ExecCredential: 플러그인을 실행해 토큰(또는 인증서)을 받는다.
+ *  - 비동기(서버를 멈추지 않는다), 30초 제한
+ *  - ISOMORPH 자신의 비밀(ISOMORPH_*)은 넘기지 않는다
+ *  - 상대 경로 명령은 kubeconfig 가 있는 폴더 기준(kubectl 과 같음)
+ *  - 실패해도 플러그인 출력은 오류 문구에 싣지 않는다(토큰 조각이 화면·로그로 새지 않게)
+ */
+async function runExec(conn: Conn): Promise<void> {
   const e = conn.exec!;
-  const env = { ...process.env, ...Object.fromEntries((e.env ?? []).map((x) => [x.name, x.value])), KUBERNETES_EXEC_INFO: JSON.stringify({ apiVersion: 'client.authentication.k8s.io/v1', kind: 'ExecCredential', spec: { interactive: false } }) };
-  let out: string;
+  const base = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('ISOMORPH_')));
+  const env = { ...base, ...Object.fromEntries((e.env ?? []).map((x) => [x.name, x.value])), KUBERNETES_EXEC_INFO: JSON.stringify({ apiVersion: 'client.authentication.k8s.io/v1', kind: 'ExecCredential', spec: { interactive: false } }) };
+  const command = e.command.includes('/') && !path.isAbsolute(e.command) && conn.dir ? path.resolve(conn.dir, e.command) : e.command;
+  const name = path.basename(e.command);
+  const out = await new Promise<string>((resolve, reject) => {
+    execFile(command, e.args ?? [], { env, encoding: 'utf8', timeout: 30_000, maxBuffer: 1 << 20 }, (err, stdout) => {
+      if (err) reject(new Error(`kubeconfig 의 인증 플러그인(${name})을 실행하지 못했습니다(${(err as { code?: unknown }).code ?? (err as { signal?: unknown }).signal ?? '오류'})`));
+      else resolve(stdout);
+    });
+  });
+  let status: { token?: string; clientCertificateData?: string; clientKeyData?: string; expirationTimestamp?: string };
   try {
-    out = execFileSync(e.command, e.args ?? [], { env, encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'] });
-  } catch (err) {
-    throw new Error(`kubeconfig 의 인증 플러그인(${path.basename(e.command)})을 실행하지 못했습니다: ${String((err as Error).message).split('\n')[0].slice(0, 160)}`);
+    status = (JSON.parse(out) as { status?: typeof status }).status ?? {};
+  } catch {
+    throw new Error(`kubeconfig 의 인증 플러그인(${name}) 출력이 ExecCredential(JSON)이 아닙니다`);
   }
-  const status = (JSON.parse(out) as { status?: { token?: string; clientCertificateData?: string; clientKeyData?: string; expirationTimestamp?: string } }).status ?? {};
   conn.token = status.token ?? conn.token;
   if (status.clientCertificateData) conn.cert = Buffer.from(status.clientCertificateData);
   if (status.clientKeyData) conn.key = Buffer.from(status.clientKeyData);
@@ -119,9 +137,24 @@ export class KubernetesAdapter implements Adapter {
   }
 
   /** 인증 헤더: 고정 토큰, 토큰 파일(서비스 계정은 주기적으로 바뀐다), 인증 플러그인(만료 1분 전 갱신) */
-  private headers(): Record<string, string> {
+  private refreshing: Promise<void> | null = null;
+  private execFailure: { at: number; error: Error } | null = null;
+
+  private async headers(): Promise<Record<string, string>> {
     const c = this.conn;
-    if (c.exec && (!c.token || (c.tokenExpires ?? 0) - 60_000 < Date.now())) runExec(c);
+    if (c.exec && (!c.token || (c.tokenExpires ?? 0) - 60_000 < Date.now())) {
+      // 실패한 지 10초가 안 됐으면 다시 실행하지 않는다(관측·watch 마다 플러그인을 두드리지 않게)
+      if (this.execFailure && Date.now() - this.execFailure.at < 10_000) throw this.execFailure.error;
+      // 동시에 여러 요청이 와도 한 번만 실행한다
+      this.refreshing ??= runExec(c)
+        .then(() => void (this.execFailure = null))
+        .catch((error: Error) => {
+          this.execFailure = { at: Date.now(), error };
+          throw error;
+        })
+        .finally(() => (this.refreshing = null));
+      await this.refreshing;
+    }
     const token = c.tokenFile ? fs.readFileSync(c.tokenFile, 'utf8').trim() : c.token;
     return { accept: 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) };
   }
@@ -130,16 +163,17 @@ export class KubernetesAdapter implements Adapter {
     return url.protocol === 'https:' ? { ca: this.conn.ca, cert: this.conn.cert, key: this.conn.key, rejectUnauthorized: !this.conn.insecure } : {};
   }
 
-  private request(method: string, p: string, body?: unknown, contentType = 'application/json'): Promise<{ status: number; json: unknown }> {
+  private async request(method: string, p: string, body?: unknown, contentType = 'application/json'): Promise<{ status: number; json: unknown }> {
     const url = new URL(this.conn.server + p);
     const mod = url.protocol === 'https:' ? https : http;
     const data = body === undefined ? undefined : Buffer.from(JSON.stringify(body));
+    const auth = await this.headers();
     return new Promise((resolve, reject) => {
       const req = mod.request(
         url,
         {
           method,
-          headers: { ...this.headers(), ...(data ? { 'content-type': contentType, 'content-length': data.length } : {}) },
+          headers: { ...auth, ...(data ? { 'content-type': contentType, 'content-length': data.length } : {}) },
           ...this.tls(url),
           timeout: 15_000,
         },
@@ -343,7 +377,7 @@ export class KubernetesAdapter implements Adapter {
       const mod = url.protocol === 'https:' ? https : http;
       let headers: Record<string, string>;
       try {
-        headers = this.headers();
+        headers = await this.headers();
       } catch {
         return later(() => void open(p, collection), 30_000);
       }
@@ -390,7 +424,8 @@ export class KubernetesAdapter implements Adapter {
   private parseId(cmd: UpdateCommand) {
     const id = String(cmd.pk);
     const m = /^([a-z0-9-]{1,63})\/([a-z0-9.-]{1,253})$/.exec(id);
-    if (!m) throw new UnsupportedCommandError(`잘못된 디플로이먼트 id: ${id}`);
+    // '.'·'..' 는 주소 정규화로 다른 경로가 될 수 있다(실제 이름으로는 있을 수 없지만 막는다)
+    if (!m || /^\.{1,2}$/.test(m[2])) throw new UnsupportedCommandError(`잘못된 디플로이먼트 id: ${id}`);
     return { namespace: m[1], name: m[2] };
   }
 

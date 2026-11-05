@@ -82,6 +82,34 @@ describe('Kubernetes adapter (fake API with real response shapes)', () => {
     expect(fs.readFileSync(count, 'utf8').length).toBeGreaterThan(1);
   });
 
+  it('keeps the auth plugin safe: no ISOMORPH secrets passed in, no output echoed, no hammering after a failure', async () => {
+    const count = path.join(dir, 'exec-fail-count');
+    fs.rmSync(count, { force: true });
+    const mk = (plugin: string) => {
+      const cfg = { 'current-context': 'c', contexts: [{ name: 'c', context: { cluster: 'k', user: 'u' } }], clusters: [{ name: 'k', cluster: { server: kube.url } }], users: [{ name: 'u', user: { exec: { command: process.execPath, args: ['-e', plugin], env: [{ name: 'FAKE_TOKEN', value: kube.token }] } } }] };
+      fs.writeFileSync(path.join(dir, 'exec2.json'), JSON.stringify(cfg));
+      return new KubernetesAdapter({ kubeconfig: path.join(dir, 'exec2.json') });
+    };
+    // 1) ISOMORPH 의 비밀은 플러그인에 넘어가지 않는다(넘어가면 틀린 토큰을 내서 401)
+    process.env.ISOMORPH_TOKEN_PROBE = 'operator-secret';
+    try {
+      const probe = mk(`console.log(JSON.stringify({ status: { token: process.env.ISOMORPH_TOKEN_PROBE ? 'leaked' : process.env.FAKE_TOKEN } }))`);
+      await probe.connect();
+    } finally {
+      delete process.env.ISOMORPH_TOKEN_PROBE;
+    }
+    // 2) 출력이 JSON 이 아니어도 그 출력(토큰 조각일 수 있다)을 오류 문구에 싣지 않는다
+    const garbled = mk(`console.log('eyJhbGciOiJSUzI1NiJ9.SECRET-PART')`);
+    const err = await garbled.connect().catch((e: Error) => e);
+    expect(String(err)).toMatch(/ExecCredential/);
+    expect(String(err)).not.toContain('eyJhbG');
+    // 3) 실패하면 10초 동안은 다시 실행하지 않는다(관측·watch 마다 두드리지 않게), 동시에 와도 한 번만
+    const failing = mk(`require('fs').appendFileSync(${JSON.stringify(count)}, 'x'); process.exit(3)`);
+    await expect(failing.connect()).rejects.toThrow(/실행하지 못했습니다/);
+    await Promise.all([failing.snapshot(['nodes']).catch(() => {}), failing.snapshot(['deployments']).catch(() => {})]);
+    expect(fs.readFileSync(count, 'utf8')).toHaveLength(1);
+  });
+
   it('refuses to connect without the right credentials', async () => {
     await expect(new KubernetesAdapter({ server: kube.url, token: 'wrong' }).connect()).rejects.toThrow(/401/);
   });
@@ -161,6 +189,7 @@ describe('Kubernetes adapter (fake API with real response shapes)', () => {
     await expect(a.execute({ op: 'update' as const, collection: 'pods', pk: 'default/x', patch: { phase: 'Running' }, before: {} })).rejects.toBeInstanceOf(UnsupportedCommandError);
     await expect(a.execute({ op: 'update' as const, collection: 'deployments', pk: 'default/web', patch: { name: 'x' }, before: {} })).rejects.toBeInstanceOf(UnsupportedCommandError);
     await expect(a.execute({ op: 'update' as const, collection: 'deployments', pk: '../../api/v1/secrets', patch: { replicas: 1 }, before: { replicas: 5 } })).rejects.toThrow(/잘못된/);
+    for (const pk of ['default/.', 'default/..']) await expect(a.execute({ op: 'update' as const, collection: 'deployments', pk, patch: { replicas: 1 }, before: { replicas: 5 } })).rejects.toThrow(/잘못된/);
     await expect(a.execute({ op: 'update' as const, collection: 'deployments', pk: 'default/web', patch: { replicas: 10_000 }, before: { replicas: 5 } })).rejects.toThrow(/0~100/);
     await expect(a.execute({ op: 'update' as const, collection: 'deployments', pk: 'default/web', patch: { replicas: -1 }, before: { replicas: 5 } })).rejects.toThrow(/0~100/);
     await expect(a.execute({ op: 'update' as const, collection: 'deployments', pk: 'default/gone', patch: { replicas: 1 }, before: { replicas: 1 } })).rejects.toBeInstanceOf(ConflictError);

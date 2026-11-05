@@ -162,6 +162,8 @@ function relatedOf(snap: Snapshot, grammar: WorldGrammar, schema: SystemSchema, 
     const target = findCollection(schema, f.ref.collection);
     if (!target) continue;
     const r = (snap.collections[target.name] ?? []).find((x) => String(x[f.ref!.field]) === String(row[f.name]));
+    // 대상 행이 관측 창 밖이면 참조 값 그대로를 보여 주게 되는데, 그 값이 민감하면(이메일로 잇는 참조 등) 내보내지 않는다
+    if (!r && (f.sensitive || target.fields.find((x) => x.name === f.ref!.field)?.sensitive)) continue;
     describe(target.name, String(r ? pkOf(r, target) : row[f.name]), r, 'to', f.name, !!f.ref.crossSystem);
   }
   // 이 행을 가리키는 곳. 오가는 개체(스팬·이벤트처럼 걸어 다니는 것)는 끊임없이 바뀌므로 하나하나 늘어놓지 않고,
