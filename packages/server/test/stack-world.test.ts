@@ -59,6 +59,9 @@ describe('one world for the cluster and its services', () => {
   it('shows what is linked across systems when you inspect either side', () => {
     const svc = rt.inspect('otel_services:payments');
     expect(svc.related!.find((r) => r.crossSystem)).toMatchObject({ collection: 'k8s_deployments', pk: 'shop/payments', direction: 'from', entityId: 'k8s_deployments:shop/payments' });
+    // 오가는 스팬은 하나하나 늘어놓지 않고 수로만(목록이 계속 바뀌면 누를 수 없다)
+    expect(svc.related!.some((r) => r.collection === 'otel_spans')).toBe(false);
+    expect(svc.relatedMore).toBeGreaterThan(0);
     const dep = rt.inspect('k8s_deployments:shop/payments');
     expect(dep.related!.find((r) => r.crossSystem)).toMatchObject({ collection: 'otel_services', pk: 'payments', direction: 'to' });
     expect(dep.related!.filter((r) => r.collection === 'k8s_pods')).toHaveLength(2);

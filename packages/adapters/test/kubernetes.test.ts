@@ -104,6 +104,8 @@ describe('Kubernetes adapter (fake API with real response shapes)', () => {
     const ev = s.collections.events.find((e) => e.reason === 'BackOff')!;
     expect(ev.type).toBe('Warning');
     expect(s.collections.pods.some((p) => p.id === ev.pod_id)).toBe(true);
+    // 지워진 파드의 이벤트: 잇지 않고(대상 없음 거짓 경보 방지) 원래 대상은 글자로 남긴다
+    expect(s.collections.events.find((e) => e.reason === 'Killing')).toMatchObject({ pod_id: null, object: 'Pod default/web-5f7c9d8b6-gone1' });
   });
 
   it('declares the desired-vs-actual promises Kubernetes cannot enforce itself', async () => {

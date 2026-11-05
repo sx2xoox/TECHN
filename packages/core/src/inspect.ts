@@ -78,15 +78,26 @@ function relatedOf(snap: Snapshot, grammar: WorldGrammar, schema: SystemSchema, 
     const r = (snap.collections[target.name] ?? []).find((x) => String(x[f.ref!.field]) === String(row[f.name]));
     describe(target.name, String(r ? pkOf(r, target) : row[f.name]), r, 'to', f.name, !!f.ref.crossSystem);
   }
-  // 이 행을 가리키는 곳
+  // 이 행을 가리키는 곳. 오가는 개체(스팬·이벤트처럼 걸어 다니는 것)는 끊임없이 바뀌므로 하나하나 늘어놓지 않고,
+  // 법칙을 어기는 것만 보이고 나머지는 수로만 센다(목록이 계속 바뀌면 누르려던 줄이 사라진다)
+  let skipped = 0;
   for (const c of schema.collections) {
+    const transient = grammar.kinds.some((k) => k.collection === c.name && k.archetype === 'npc');
     for (const f of c.fields) {
       if (f.ref?.collection !== collection) continue;
       const mine = row[f.ref.field];
-      for (const r of snap.collections[c.name] ?? []) if (String(r[f.name]) === String(mine)) describe(c.name, String(pkOf(r, c)), r, 'from', f.name, !!f.ref.crossSystem);
+      for (const r of snap.collections[c.name] ?? []) {
+        if (String(r[f.name]) !== String(mine)) continue;
+        const rowPk = String(pkOf(r, c));
+        if (transient && !world.violations.some((v) => v.collection === c.name && String(v.pk) === rowPk)) {
+          skipped++;
+          continue;
+        }
+        describe(c.name, rowPk, r, 'from', f.name, !!f.ref.crossSystem);
+      }
     }
   }
   const rank = (x: RelatedEntity) => (x.violations.length ? 0 : 2) + (x.crossSystem ? 0 : 1);
-  out.sort((a, b) => rank(a) - rank(b));
-  return { related: out.slice(0, RELATED_MAX), more: Math.max(0, out.length - RELATED_MAX) };
+  out.sort((a, b) => rank(a) - rank(b) || String(a.pk).localeCompare(String(b.pk)));
+  return { related: out.slice(0, RELATED_MAX), more: Math.max(0, out.length - RELATED_MAX) + skipped };
 }

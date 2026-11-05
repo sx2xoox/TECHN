@@ -223,6 +223,7 @@ export class KubernetesAdapter implements Adapter {
           fields: [
             s('id'),
             { name: 'pod_id', type: 'string', nullable: true, ref: { collection: 'pods', field: 'id' }, refEnforced: false },
+            { name: 'object', type: 'string', nullable: true },
             { name: 'type', type: 'string', nullable: false, enumValues: ['Normal', 'Warning'] },
             s('reason'),
             { name: 'message', type: 'string', nullable: true },
@@ -238,7 +239,7 @@ export class KubernetesAdapter implements Adapter {
     const [nodes, deps, pods, events] = await Promise.all([
       want('nodes') || want('pods') ? this.list('/api/v1/nodes') : [],
       want('deployments') || want('pods') ? this.list(this.ns('/apis/apps/v1', 'deployments')) : [],
-      want('pods') || want('nodes') ? this.list(this.ns('/api/v1', 'pods')) : [],
+      want('pods') || want('nodes') || want('events') ? this.list(this.ns('/api/v1', 'pods')) : [],
       want('events') ? this.list(this.ns('/api/v1', 'events')) : [],
     ]);
     const depIds = new Set(deps.map((d) => `${d.metadata.namespace}/${d.metadata.name}`));
@@ -289,9 +290,20 @@ export class KubernetesAdapter implements Adapter {
         .map((e) => ({ e, at: String(e.lastTimestamp ?? e.eventTime ?? e.metadata.creationTimestamp ?? '') }))
         .sort((a, b) => b.at.localeCompare(a.at))
         .slice(0, this.opts.maxEvents ?? 200);
+      // 이벤트는 대상이 지워진 뒤에도 한동안(기본 1시간) 남는다: 지금 있는 파드만 잇고, 원래 대상은 글자로 남긴다('대상 없음' 거짓 경보 방지)
+      const podIds = new Set(pods.map((p) => `${p.metadata.namespace}/${p.metadata.name}`));
       collections.events = recent.map(({ e, at }): Row => {
         const obj = e.involvedObject as { kind?: string; name?: string; namespace?: string } | undefined;
-        return { id: e.metadata.uid, pod_id: obj?.kind === 'Pod' ? `${obj.namespace}/${obj.name}` : null, type: String(e.type ?? 'Normal'), reason: String(e.reason ?? ''), message: String(e.message ?? '').slice(0, 200), created_at: at || null };
+        const podId = obj?.kind === 'Pod' ? `${obj.namespace}/${obj.name}` : null;
+        return {
+          id: e.metadata.uid,
+          pod_id: podId && podIds.has(podId) ? podId : null,
+          object: obj?.kind ? `${obj.kind} ${obj.namespace ? `${obj.namespace}/` : ''}${obj.name ?? ''}` : null,
+          type: String(e.type ?? 'Normal'),
+          reason: String(e.reason ?? ''),
+          message: String(e.message ?? '').slice(0, 200),
+          created_at: at || null,
+        };
       });
     }
     return { ts: Date.now(), collections };

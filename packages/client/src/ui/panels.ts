@@ -285,7 +285,7 @@ export class Inspector {
 
     // 연결된 곳(다른 시스템 포함): 저쪽이 아프면 먼저 보인다
     if (m.related?.length) {
-      this.el.append(this.stable('related', JSON.stringify([m.entityId, m.related, m.relatedMore]), () =>
+      this.el.append(this.stable('related', JSON.stringify([m.entityId, m.related]), () =>
         h('div', null,
           h('h3', null, '연결된 곳 ', h('span', { class: 'muted small' }, '(참조로 바로 이어진 곳 · 지도에 점선)')),
           h('ul', { class: 'related' }, (m.related ?? []).map((r) =>
@@ -298,8 +298,9 @@ export class Inspector {
                 ...r.violations.map((v) => h('div', { class: 'small bad' }, `⚠ ${v.title}`)),
               ),
             ))),
-          m.relatedMore ? h('p', { class: 'muted small' }, `외 ${m.relatedMore}곳`) : null,
         )));
+      // 수는 자주 바뀌므로 목록(누를 수 있는 줄)과 따로 그린다
+      if (m.relatedMore) this.el.append(h('p', { class: 'muted small' }, `그 밖에 ${m.relatedMore}곳(오가는 개체 포함)`));
     }
 
     // 원본 데이터 ↔ 세계 표현

@@ -60,6 +60,8 @@ export async function startFakeKube(): Promise<FakeKube> {
   addDeployment('worker', 'shop', 1, 0);
   const crash = addPod('worker', 'shop', { ready: false, restarts: 7 });
   events.push({ metadata: { name: 'e1', namespace: 'shop', uid: 'ev1', resourceVersion: nextRv(), creationTimestamp: now }, involvedObject: { kind: 'Pod', name: crash.metadata.name, namespace: 'shop' }, type: 'Warning', reason: 'BackOff', message: 'Back-off restarting failed container', lastTimestamp: now });
+  // 이미 지워진 파드에 대한 이벤트(실제 클러스터에서는 한 시간쯤 남는다)
+  events.push({ metadata: { name: 'e0', namespace: 'default', uid: 'ev0', resourceVersion: nextRv(), creationTimestamp: now }, involvedObject: { kind: 'Pod', name: 'web-5f7c9d8b6-gone1', namespace: 'default' }, type: 'Normal', reason: 'Killing', message: 'Stopping container nginx', lastTimestamp: now });
   events.push({ metadata: { name: 'e2', namespace: 'shop', uid: 'ev2', resourceVersion: nextRv(), creationTimestamp: now }, involvedObject: { kind: 'Pod', name: pods[3].metadata.name, namespace: 'shop' }, type: 'Warning', reason: 'FailedScheduling', message: '0/2 nodes are available', lastTimestamp: now });
 
   const watchers = new Map<string, Set<http.ServerResponse>>();
