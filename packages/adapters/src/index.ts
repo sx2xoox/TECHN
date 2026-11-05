@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { CompositeAdapter, type CompositeLinkSpec } from './composite.ts';
 import { DockerAdapter, type DockerAdapterOptions } from './docker.ts';
 import { HttpJsonAdapter, type HttpJsonAdapterOptions } from './http-json.ts';
 import { KubernetesAdapter, type KubernetesAdapterOptions } from './kubernetes.ts';
@@ -16,6 +17,7 @@ export * from './sdk.ts';
 export * from './otel.ts';
 export * from './otel-proto.ts';
 export * from './kubernetes.ts';
+export * from './composite.ts';
 
 export type AdapterConfig =
   | ({ type: 'postgres' } & PostgresAdapterOptions)
@@ -26,7 +28,9 @@ export type AdapterConfig =
   /** Kubernetes(kubeconfig 또는 server/token) */
   | ({ type: 'kubernetes' } & KubernetesAdapterOptions)
   /** 직접 만든 어댑터 모듈: default export 가 (options) => Adapter (defineAdapter 사용 권장) */
-  | { type: 'module'; path: string; options?: Record<string, unknown> };
+  | { type: 'module'; path: string; options?: Record<string, unknown> }
+  /** 여러 시스템을 한 세계로(이름 = 컬렉션 앞에 붙는 짧은 이름) */
+  | { type: 'composite'; parts: { name: string; adapter: AdapterConfig }[]; links?: CompositeLinkSpec[]; autoLink?: boolean; system?: string };
 
 export function createAdapter(config: AdapterConfig): Adapter {
   switch (config.type) {
@@ -42,11 +46,17 @@ export function createAdapter(config: AdapterConfig): Adapter {
       return new OtelAdapter(config);
     case 'kubernetes':
       return new KubernetesAdapter(config);
+    case 'composite':
+      return new CompositeAdapter({ ...config, parts: config.parts.map((p) => ({ name: p.name, adapter: createAdapter(p.adapter) })) });
   }
 }
 
 /** 내장 어댑터 + 사용자 모듈 어댑터를 모두 만든다. path 는 baseDir 기준. */
 export async function loadAdapter(config: AdapterConfig, baseDir = process.cwd()): Promise<Adapter> {
+  if (config.type === 'composite') {
+    const parts = await Promise.all(config.parts.map(async (p) => ({ name: p.name, adapter: await loadAdapter(p.adapter, baseDir) })));
+    return new CompositeAdapter({ ...config, parts });
+  }
   if (config.type !== 'module') return createAdapter(config);
   const mod = (await import(pathToFileURL(path.resolve(baseDir, config.path)).href)) as { default?: unknown; createAdapter?: unknown };
   const factory = mod.default ?? mod.createAdapter;

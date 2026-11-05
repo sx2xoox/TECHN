@@ -55,6 +55,10 @@ async function main() {
 
   const inspector = new Inspector({
     onClose: () => select(null),
+    onSelect: (id) => {
+      select(id);
+      town.focus(id);
+    },
     onAffordance: (entityId, affordanceId) => send({ type: 'dryrun', entityId, affordanceId }),
     onInvariant: (id, status) => send({ type: 'invariant', id, status }),
   });
@@ -196,6 +200,7 @@ async function main() {
     if (!state.hello) return;
     const e = m.entity;
     inspector.render(m, e ? kindTitle(e.kind) : '', state.hello.grammar.invariants, state.mode === 'history');
+    if (m.entityId === state.selected) town.setLinks(m.entityId, (m.related ?? []).filter((r) => r.entityId).map((r) => ({ id: r.entityId!, bad: r.violations.length > 0, cross: r.crossSystem })));
   }
 
   function onDryRun(m: DryRunMessage) {

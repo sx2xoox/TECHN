@@ -17,10 +17,14 @@ export interface CauseEvent {
   kind: ChangeEvent['kind'];
   summary: string;
   relation: 'self' | 'referencing' | 'referenced';
+  /** 이 사건으로 연결된 행이 자기 법칙을 어기기 시작했다면 그 법칙 */
+  broke?: string;
+  /** 다른 시스템의 행인가 */
+  crossSystem?: boolean;
 }
 
 export interface Diagnosis {
-  pattern: 'race' | 'sudden-change' | 'dangling-ref' | 'duplicate' | 'time-order' | 'mismatch' | 'unknown';
+  pattern: 'race' | 'sudden-change' | 'dangling-ref' | 'duplicate' | 'time-order' | 'mismatch' | 'linked' | 'unknown';
   title: string;
   detail: string;
   confidence: 'high' | 'medium' | 'low';
@@ -72,8 +76,19 @@ const NO_CTX: EvalContext = { valuesOf: () => new Set(), countOf: () => 0 };
  * 위반이 '시작된' 순간(법칙을 지키던 값이 깨진 변경)을 기준으로 앞뒤 사건을 모은다.
  * 위반 이후의 조치(예: 운영자가 문을 잠근 것)를 원인으로 오인하지 않기 위함.
  */
-export function findCauses(v: Violation, events: ChangeEvent[], schema: SystemSchema, windowMs = 20_000, rowNow?: Row, inv?: Invariant): CauseEvent[] {
+export function findCauses(v: Violation, events: ChangeEvent[], schema: SystemSchema, windowMs = 20_000, rowNow?: Row, inv?: Invariant, laws?: Invariant[]): CauseEvent[] {
   const sens = (collection: string) => new Set(schema.collections.find((c) => c.name === collection)?.fields.filter((f) => f.sensitive).map((f) => f.name) ?? []);
+  /** 이 사건으로 그 행이 자기 법칙을 어기기 시작했나(지키던 → 어김) */
+  const brokeBy = (e: ChangeEvent): string | undefined => {
+    if (!laws || !e.after) return undefined;
+    for (const l of laws) {
+      if (l.collection !== e.collection || l.status === 'dismissed' || !ROW_LOCAL.has(l.expr.op)) continue;
+      const afterOk = evalExpr(l.expr, e.after, NO_CTX);
+      const beforeOk = e.before ? evalExpr(l.expr, e.before, NO_CTX) : true;
+      if (!afterOk && beforeOk) return l.title;
+    }
+    return undefined;
+  };
   const vKey = String(v.pk);
   const selfEvents = events.filter((e) => e.collection === v.collection && String(e.pk) === vKey).sort((a, b) => a.ts - b.ts);
   let onset: number | undefined;
@@ -87,6 +102,11 @@ export function findCauses(v: Violation, events: ChangeEvent[], schema: SystemSc
   const end = onset ?? (selfEvents.length ? selfEvents.at(-1)!.ts : Math.max(0, ...events.map((e) => e.ts)));
   const start = end - windowMs;
   const out: CauseEvent[] = [];
+  const withBroke = (e: ChangeEvent, crossSystem: boolean) => {
+    // 같은 순간의 변화는 원인으로 돌리지 않는다(어느 쪽이 먼저인지 모름)
+    const broke = e.ts < end ? brokeBy(e) : undefined;
+    return { ...(broke ? { broke } : {}), ...(crossSystem ? { crossSystem: true } : {}) };
+  };
 
   for (const e of selfEvents) {
     if (e.ts < start || e.ts > end) continue;
@@ -102,7 +122,7 @@ export function findCauses(v: Violation, events: ChangeEvent[], schema: SystemSc
   }
 
   const refFields = schema.collections.flatMap((c) =>
-    c.fields.filter((f) => f.ref?.collection === v.collection).map((f) => ({ collection: c.name, field: f.name })),
+    c.fields.filter((f) => f.ref?.collection === v.collection).map((f) => ({ collection: c.name, field: f.name, crossSystem: !!f.ref?.crossSystem })),
   );
   for (const e of events) {
     if (e.ts < start || e.ts > end) continue;
@@ -118,6 +138,7 @@ export function findCauses(v: Violation, events: ChangeEvent[], schema: SystemSc
         kind: e.kind,
         summary: e.kind === 'insert' ? `생성 (${brief(e.after, sens(e.collection))})` : e.kind === 'update' ? changed(e.before, e.after, sens(e.collection)) : '삭제',
         relation: 'referencing',
+        ...withBroke(e, rf.crossSystem),
       });
     }
   }
@@ -130,15 +151,25 @@ export function findCauses(v: Violation, events: ChangeEvent[], schema: SystemSc
       for (const f of col.fields) {
         if (!f.ref || row[f.name] === null || row[f.name] === undefined) continue;
         for (const e of events) {
-          if (e.collection === f.ref.collection && String(e.pk) === String(row[f.name]) && e.kind === 'delete') {
-            out.push({ ts: e.ts, at: e.ts, collection: e.collection, pk: e.pk, kind: 'delete', summary: `참조 대상 삭제됨 (${brief(e.before, sens(e.collection))})`, relation: 'referenced' });
+          if (e.collection !== f.ref.collection || String(e.pk) !== String(row[f.name])) continue;
+          if (e.kind === 'delete') {
+            out.push({ ts: e.ts, at: e.ts, collection: e.collection, pk: e.pk, kind: 'delete', summary: `참조 대상 삭제됨 (${brief(e.before, sens(e.collection))})`, relation: 'referenced', ...(f.ref.crossSystem ? { crossSystem: true } : {}) });
+            continue;
           }
+          // 가리키는 대상(다른 시스템일 수도)이 위반 직전에 자기 법칙을 어기기 시작했다면 원인 후보
+          if (e.ts < start || e.ts >= end) continue;
+          const broke = brokeBy(e);
+          if (!broke) continue;
+          out.push({ ts: e.ts, at: e.ts, collection: e.collection, pk: e.pk, kind: e.kind, summary: e.kind === 'update' ? changed(e.before, e.after, sens(e.collection)) : `생성 (${brief(e.after, sens(e.collection))})`, relation: 'referenced', broke, ...(f.ref.crossSystem ? { crossSystem: true } : {}) });
         }
       }
     }
   }
   out.sort((a, b) => a.at - b.at || a.ts - b.ts);
-  return out.slice(-40);
+  // 연결된 곳이 법칙을 어긴 사건은 잦은 사건(스팬 수십 개 등)에 밀려나지 않게 늘 남긴다
+  const key = out.filter((c) => c.broke).slice(-10);
+  const rest = out.filter((c) => !c.broke).slice(-(40 - key.length));
+  return [...key, ...rest].sort((a, b) => a.at - b.at || a.ts - b.ts);
 }
 
 export function diagnose(v: Violation, inv: Invariant | undefined, causes: CauseEvent[]): Diagnosis {
@@ -151,6 +182,17 @@ export function diagnose(v: Violation, inv: Invariant | undefined, causes: Cause
   }
   if (expr?.op === 'unique') {
     return { pattern: 'duplicate', title: '같은 값이 두 번 존재', detail: `${expr.field}=${JSON.stringify(v.values[expr.field])} 인 행이 둘 이상입니다.`, confidence: 'high', suggestion: 'UNIQUE 제약 또는 멱등 키를 추가하세요.' };
+  }
+  // 연결된 행(같은 시스템의 참조든, 다른 시스템이든)이 '먼저' 자기 법칙을 어겼다면: 이 위반은 그 결과일 수 있다
+  const upstream = causes.filter((c) => c.relation !== 'self' && c.broke).at(-1);
+  if (upstream) {
+    return {
+      pattern: 'linked',
+      title: upstream.crossSystem ? '다른 시스템의 연결된 곳이 먼저 법칙을 어김' : '연결된 곳이 먼저 법칙을 어김',
+      detail: `${upstream.collection} #${upstream.pk} 가 '${upstream.broke}' 를 먼저 어겼고(${upstream.summary}), 그 뒤에 이 법칙이 깨졌습니다. 이 위반은 그 결과일 수 있습니다.`,
+      confidence: 'medium',
+      suggestion: `먼저 ${upstream.collection} #${upstream.pk} 를 살펴보세요.`,
+    };
   }
   if (expr?.op === 'cmpField') {
     const a = v.values[expr.field];

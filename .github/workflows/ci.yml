@@ -59,13 +59,24 @@ jobs:
       - uses: helm/kind-action@v1
         with:
           cluster_name: isomorph
-      - name: a healthy deployment and one whose image cannot be pulled
+      - name: a healthy deployment, one whose image cannot be pulled, and a payments backend
         run: |
           kubectl create deployment web --image=nginx:1.27-alpine --replicas=2
           kubectl create deployment broken --image=registry.invalid/isomorph/does-not-exist:1
+          kubectl create deployment payments --image=nginx:1.27-alpine --replicas=2
+          kubectl expose deployment payments --type=NodePort --port=80
           kubectl rollout status deployment/web --timeout=180s
+          kubectl rollout status deployment/payments --timeout=180s
           kubectl config view --raw -o json --minify > /tmp/kubeconfig.json
+          ip=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
+          port=$(kubectl get svc payments -o jsonpath='{.spec.ports[0].nodePort}')
+          for i in $(seq 1 30); do curl -sf "http://$ip:$port/" > /dev/null && break; sleep 1; done
+          echo "ISOMORPH_TEST_PAYMENTS_URL=http://$ip:$port/" >> "$GITHUB_ENV"
       - run: npx vitest run packages/server/test/kubernetes.real.test.ts
+        env:
+          ISOMORPH_TEST_KUBECONFIG: /tmp/kubeconfig.json
+      - name: one world of the cluster and real services that call it (failure is caused, not faked)
+        run: npx vitest run packages/server/test/stack.real.test.ts
         env:
           ISOMORPH_TEST_KUBECONFIG: /tmp/kubeconfig.json
       - name: one command with the default YAML kubeconfig (no kubectl involved)
@@ -74,11 +85,21 @@ jobs:
           for i in $(seq 1 90); do curl -sf http://127.0.0.1:4100/api/hello | grep -q '"running"' && break; sleep 1; done
           curl -sf http://127.0.0.1:4100/api/world | grep -q 'default/web'
           curl -sf http://127.0.0.1:4100/api/world | grep -q 'schema_deployments_ready_replicas_replicas'
+      - name: one command for several systems (cluster + trace receiver)
+        run: |
+          npm run isomorph -- connect kubernetes otel --port 4101 > /tmp/iso-stack.log 2>&1 &
+          for i in $(seq 1 90); do curl -sf http://127.0.0.1:4101/api/hello | grep -q '"running"' && break; sleep 1; done
+          curl -sf -X POST -H 'content-type: application/json' --data @examples/otel/sample-otlp.json http://127.0.0.1:4318/v1/traces
+          sleep 3
+          curl -sf http://127.0.0.1:4101/api/world | grep -q 'otel_services:payments'
+          curl -sf http://127.0.0.1:4101/api/world | grep -q 'k8s_deployments:default/payments'
+          curl -sf http://127.0.0.1:4101/api/hello | grep -q 'k8s · '
       - name: cluster state on failure
         if: failure()
         run: |
           kubectl get deploy,rs,pods,events -A -o wide | tail -60
           cat /tmp/iso.log || true
+          cat /tmp/iso-stack.log || true
 
   e2e:
     name: browser end-to-end demo
@@ -96,6 +117,8 @@ jobs:
       - run: npm run e2e -- --shots e2e-screenshots
       - name: shareable snapshot opens offline, read-only, without sensitive values
         run: npm run e2e:snapshot -- --shots e2e-screenshots
+      - name: one world for a cluster and its services (cross-system diagnosis)
+        run: npm run e2e:stack -- --shots e2e-screenshots
       - name: user-study kit self-test (bots, not data)
         run: npm run study:selftest -- --shots e2e-screenshots
       - uses: actions/upload-artifact@v4

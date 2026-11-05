@@ -20,7 +20,15 @@ export interface TwoServices {
   close(): Promise<void>;
 }
 
-export async function startTwoServices(opts: { endpoint: string; failRate?: number; paymentsDelayMs?: [number, number]; protocol?: 'json' | 'proto'; headers?: Record<string, string> }): Promise<TwoServices> {
+export async function startTwoServices(opts: {
+  endpoint: string;
+  failRate?: number;
+  paymentsDelayMs?: [number, number];
+  protocol?: 'json' | 'proto';
+  headers?: Record<string, string>;
+  /** 주면 payments 가 실제로 이 주소(예: 클러스터 안의 파드)를 부른다. 실패는 꾸미지 않고 그 결과를 따른다 */
+  paymentsBackend?: string;
+}): Promise<TwoServices> {
   const propagator = new W3CTraceContextPropagator();
   const provider = (service: string) =>
     new NodeTracerProvider({
@@ -39,12 +47,18 @@ export async function startTwoServices(opts: { endpoint: string; failRate?: numb
   const payments = http.createServer((req, res) => {
     const parent = propagator.extract(ROOT_CONTEXT, req.headers, defaultTextMapGetter);
     const span = payTracer.startSpan('POST /charge', { kind: SpanKind.SERVER, attributes: { 'http.request.method': 'POST' } }, parent);
-    setTimeout(() => {
-      const fail = Math.random() < (opts.failRate ?? 0.25);
-      if (fail) span.setStatus({ code: SpanStatusCode.ERROR, message: 'card declined' });
+    const finish = (fail: boolean, why: string) => {
+      if (fail) span.setStatus({ code: SpanStatusCode.ERROR, message: why });
       span.end();
-      res.writeHead(fail ? 502 : 200).end(fail ? 'declined' : 'ok');
-    }, lo + Math.random() * (hi - lo));
+      res.writeHead(fail ? 502 : 200).end(fail ? why : 'ok');
+    };
+    if (opts.paymentsBackend) {
+      fetch(opts.paymentsBackend, { signal: AbortSignal.timeout(1500) })
+        .then((r) => finish(!r.ok, `backend ${r.status}`))
+        .catch((e: Error) => finish(true, `backend unreachable: ${e.name}`));
+      return;
+    }
+    setTimeout(() => finish(Math.random() < (opts.failRate ?? 0.25), 'card declined'), lo + Math.random() * (hi - lo));
   });
   const payPort = await listen(payments);
 

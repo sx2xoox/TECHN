@@ -199,7 +199,8 @@ export class KubernetesAdapter implements Adapter {
         {
           name: 'deployments',
           primaryKey: 'id',
-          fields: [s('id'), s('name'), s('namespace'), { name: 'replicas', type: 'integer', nullable: false }, { name: 'ready_replicas', type: 'integer', nullable: false }, { name: 'status', type: 'string', nullable: false, enumValues: ['available', 'progressing', 'degraded'] }, { name: 'created_at', type: 'timestamp', nullable: true }],
+          // 디플로이먼트 이름 = 보통 그 앱의 서비스 이름(OpenTelemetry service.name 과 같은 체계)
+          fields: [s('id'), { ...s('name'), joinKey: 'service' }, s('namespace'), { name: 'replicas', type: 'integer', nullable: false }, { name: 'ready_replicas', type: 'integer', nullable: false }, { name: 'status', type: 'string', nullable: false, enumValues: ['available', 'progressing', 'degraded'] }, { name: 'created_at', type: 'timestamp', nullable: true }],
         },
         {
           name: 'pods',

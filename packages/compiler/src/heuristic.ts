@@ -377,8 +377,24 @@ export function compileHeuristic(schema: SystemSchema): WorldGrammar {
   const kinds = plans.map((p) => p.kind);
   const usedRegions = new Set(kinds.filter((k) => k.archetype !== 'npc').map((k) => k.region));
   if (!usedRegions.size) usedRegions.add('market');
-  const regions = REGION_ORDER.filter((r) => usedRegions.has(r)).map((r) => REGIONS[r as keyof typeof REGIONS]);
+  let regions: Region[] = REGION_ORDER.filter((r) => usedRegions.has(r)).map((r) => REGIONS[r as keyof typeof REGIONS]);
   for (const k of kinds) if (k.archetype === 'npc') k.region = regions[0].id;
+
+  // 여러 시스템을 한 세계로 묶었으면 시스템마다 따로 구역을 둔다(어느 건물이 어느 시스템인지 한눈에)
+  const systemOf = new Map(schema.collections.map((c) => [c.name, c.system] as const));
+  const systems = [...new Set(schema.collections.map((c) => c.system).filter((s): s is string => !!s))];
+  if (systems.length > 1) {
+    const out: Region[] = [];
+    for (const sys of systems) {
+      const mine = kinds.filter((k) => systemOf.get(k.collection) === sys);
+      const used = new Set(mine.filter((k) => k.archetype !== 'npc').map((k) => k.region));
+      if (!used.size) used.add(mine[0]?.region ?? 'market');
+      const regs = REGION_ORDER.filter((r) => used.has(r)).map((r) => REGIONS[r as keyof typeof REGIONS]).map((r) => ({ ...r, id: `${sys}_${r.id}`, title: `${sys} · ${r.title}` }));
+      for (const k of mine) k.region = k.archetype === 'npc' ? regs[0].id : `${sys}_${k.region}`;
+      out.push(...regs);
+    }
+    regions = out;
+  }
 
   const draft: WorldGrammar = {
     version: 1,

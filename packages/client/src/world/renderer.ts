@@ -25,6 +25,9 @@ export class Town {
   private buildings = new Container();
   private npcs = new Container();
   private overlay = new Container();
+  /** 고른 개체와 연결된 곳을 잇는 점선 */
+  private linkLayer = new Graphics();
+  private links: { from: string; to: { id: string; bad: boolean; cross: boolean }[] } | null = null;
   private views = new Map<string, BuildingView | NpcView>();
   private layout: TownLayout | null = null;
   private grammar: WorldGrammar | null = null;
@@ -51,7 +54,7 @@ export class Town {
     el.appendChild(this.app.canvas);
     this.buildings.sortableChildren = true;
     this.npcs.sortableChildren = true;
-    this.camera.addChild(this.groundLayer, this.labelsLayer, this.buildings, this.npcs, this.summaryLayer, this.overlay);
+    this.camera.addChild(this.groundLayer, this.labelsLayer, this.buildings, this.npcs, this.linkLayer, this.summaryLayer, this.overlay);
     this.summaryLayer.visible = false;
     this.app.stage.addChild(this.camera);
     this.sepia.sepia(false);
@@ -90,7 +93,81 @@ export class Town {
       if (!this.lod) for (const v of this.views.values()) v.animate(this.time, dt, this.speed);
       this.preview?.animate(this.time, dt);
       if (this.preview) this.preview.alpha = 0.55 + 0.3 * Math.sin(this.time * 5);
+      this.drawLinks();
     });
+  }
+
+  /** 연결된 곳 표시(살펴보기에서 받은 목록). from 이 null 이면 지운다 */
+  setLinks(from: string | null, to: { id: string; bad: boolean; cross: boolean }[]) {
+    const fresh = !!from && from !== this.framedFor;
+    this.links = from && to.length ? { from, to: to.slice(0, 12) } : null;
+    this.framedFor = from;
+    if (!this.links) this.linkLayer.clear();
+    else if (fresh) this.frameLinks();
+  }
+
+  private framedFor: string | null = null;
+
+  /** 새로 고른 개체와 '탈이 난' 연결 상대가 화면(살펴보기 창 왼쪽)에 함께 보이게 시야를 넓힌다 */
+  private frameLinks() {
+    if (!this.links) return;
+    const sick = this.links.to.filter((t) => t.bad || t.cross).map((t) => this.centerOf(t.id));
+    const pts = [this.centerOf(this.links.from), ...sick].filter((p): p is { x: number; y: number } => !!p);
+    if (pts.length < 2) return;
+    const { width, height } = this.app.screen;
+    const narrow = width < 700;
+    const area = { x0: 24, y0: 70, x1: narrow ? width - 24 : width - 410, y1: height - 70 };
+    let z = ZOOMS[this.zoomIndex];
+    const inView = (p: { x: number; y: number }) => {
+      const sx = this.camera.x + p.x * z;
+      const sy = this.camera.y + p.y * z;
+      return sx >= area.x0 && sx <= area.x1 && sy >= area.y0 && sy <= area.y1;
+    };
+    if (pts.every(inView)) return;
+    const minX = Math.min(...pts.map((p) => p.x)) - 40;
+    const maxX = Math.max(...pts.map((p) => p.x)) + 40;
+    const minY = Math.min(...pts.map((p) => p.y)) - 50;
+    const maxY = Math.max(...pts.map((p) => p.y)) + 30;
+    let idx = this.zoomIndex;
+    while (idx > 0 && ((maxX - minX) * ZOOMS[idx] > area.x1 - area.x0 || (maxY - minY) * ZOOMS[idx] > area.y1 - area.y0)) idx--;
+    this.zoomIndex = idx;
+    z = ZOOMS[idx];
+    this.camera.scale.set(z);
+    this.camera.position.set(Math.round((area.x0 + area.x1) / 2 - ((minX + maxX) / 2) * z), Math.round((area.y0 + area.y1) / 2 - ((minY + maxY) / 2) * z));
+    this.updateLabels();
+  }
+
+  private centerOf(id: string): { x: number; y: number } | null {
+    const v = this.views.get(id);
+    if (!v) return null;
+    if (v instanceof NpcView) return { x: v.x, y: v.y };
+    const b = v.box();
+    return { x: b.x + b.w / 2, y: b.y + b.h * 0.6 };
+  }
+
+  private drawLinks() {
+    const g = this.linkLayer;
+    g.clear();
+    if (!this.links || this.lod) return;
+    const a = this.centerOf(this.links.from);
+    if (!a) return;
+    const phase = (this.time * 12) % 8;
+    for (const t of this.links.to) {
+      const b = this.centerOf(t.id);
+      if (!b) continue;
+      const color = t.bad ? 0xe61919 : t.cross ? 0x4aa3ff : 0xfff6d5;
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const len = Math.hypot(dx, dy);
+      if (len < 1) continue;
+      // 픽셀 점선이 고른 개체 쪽에서 상대 쪽으로 흘러간다
+      for (let s = phase; s < len; s += 8) {
+        const e = Math.min(len, s + 4);
+        g.moveTo(a.x + (dx * s) / len, a.y + (dy * s) / len).lineTo(a.x + (dx * e) / len, a.y + (dy * e) / len);
+      }
+      g.stroke({ width: 2, color, alpha: 0.9 });
+      g.circle(b.x, b.y, 5).stroke({ width: 2, color, alpha: 0.9 });
+    }
   }
 
   get fps() {
@@ -200,6 +277,10 @@ export class Town {
   }
 
   select(id: string | null) {
+    if (id !== this.links?.from) {
+      this.setLinks(null, []);
+      this.framedFor = null;
+    }
     if (this.selected) {
       const prev = this.views.get(this.selected);
       if (prev) prev.selected = false;

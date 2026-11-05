@@ -387,7 +387,7 @@ export class IsomorphRuntime extends EventEmitter {
 
   inspect(entityIdValue: string, atTs?: number): InspectMessage {
     const snap = this.snapshotFor(atTs);
-    if (!snap || !this.grammar) return { type: 'inspect', entityId: entityIdValue, entity: null, collection: '', pk: '', row: null, fields: [], violations: [], causes: [], diagnosis: null, affordances: [] };
+    if (!snap || !this.grammar) return { type: 'inspect', entityId: entityIdValue, entity: null, collection: '', pk: '', row: null, fields: [], violations: [], causes: [], diagnosis: null, affordances: [], related: [] };
     return buildInspect({ snapshot: this.withOutside(snap), grammar: this.grammar, schema: this.schema, events: this.store.eventsBetween(snap.ts - 10 * 60_000, snap.ts), entityId: entityIdValue, writeMode: this.writeMode, history: atTs !== undefined });
   }
 

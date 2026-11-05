@@ -3,7 +3,7 @@ import type { ChangeEvent } from './diff.ts';
 import { kindById, parseEntityId, type WorldGrammar } from './grammar.ts';
 import { observe } from './invariants.ts';
 import { maskRow } from './legend.ts';
-import { riskAllowed, type AffordanceOption, type InspectField, type InspectMessage, type WriteMode } from './protocol.ts';
+import { riskAllowed, type AffordanceOption, type InspectField, type InspectMessage, type RelatedEntity, type WriteMode } from './protocol.ts';
 import { findCollection, pkOf, type Snapshot, type SystemSchema } from './schema.ts';
 
 /**
@@ -14,7 +14,7 @@ export function buildInspect(opts: { snapshot: Snapshot; grammar: WorldGrammar; 
   const { snapshot: snap, grammar, schema, entityId } = opts;
   const parsed = parseEntityId(entityId);
   const kind = parsed ? kindById(grammar, parsed.kind) : undefined;
-  const empty: InspectMessage = { type: 'inspect', entityId, entity: null, collection: kind?.collection ?? '', pk: parsed?.pk ?? '', row: null, fields: [], violations: [], causes: [], diagnosis: null, affordances: [] };
+  const empty: InspectMessage = { type: 'inspect', entityId, entity: null, collection: kind?.collection ?? '', pk: parsed?.pk ?? '', row: null, fields: [], violations: [], causes: [], diagnosis: null, affordances: [], related: [] };
   if (!kind || !parsed) return empty;
   const col = findCollection(schema, kind.collection);
   if (!col) return empty;
@@ -43,7 +43,7 @@ export function buildInspect(opts: { snapshot: Snapshot; grammar: WorldGrammar; 
   const sevRank = { critical: 0, warning: 1, info: 2 } as const;
   const top = [...violations].sort((a, b) => sevRank[a.severity] - sevRank[b.severity])[0];
   const topInv = top ? grammar.invariants.find((i) => i.id === top.invariantId) : undefined;
-  const causes = top ? findCauses(top, opts.events, schema, 20_000, row ?? undefined, topInv) : [];
+  const causes = top ? findCauses(top, opts.events, schema, 20_000, row ?? undefined, topInv, grammar.invariants) : [];
   const diagnosis = top ? diagnose(top, topInv, causes) : null;
   const affordances: AffordanceOption[] = grammar.affordances
     .filter((a) => a.entityKind === kind.id)
@@ -52,5 +52,41 @@ export function buildInspect(opts: { snapshot: Snapshot; grammar: WorldGrammar; 
       const reason = opts.history ? '과거 시점에서는 행동할 수 없습니다' : !riskAllowed(opts.writeMode, a.risk) ? `쓰기 권한(${opts.writeMode})이 위험도 ${a.risk} 행동을 허용하지 않습니다` : undefined;
       return { id: a.id, title: a.title, description: a.description, risk: a.risk, allowed, ...(reason ? { reason } : {}) };
     });
-  return { type: 'inspect', entityId, entity, collection: kind.collection, pk: parsed.pk, row: masked, fields, violations, causes, diagnosis, affordances };
+  const { related, more } = row ? relatedOf(snap, grammar, schema, world, kind.collection, parsed.pk, row) : { related: [], more: 0 };
+  return { type: 'inspect', entityId, entity, collection: kind.collection, pk: parsed.pk, row: masked, fields, violations, causes, diagnosis, affordances, related, ...(more ? { relatedMore: more } : {}) };
+}
+
+const RELATED_MAX = 12;
+
+/** 참조로 바로 이어진 곳들: 법칙을 어기는 곳·다른 시스템을 먼저 */
+function relatedOf(snap: Snapshot, grammar: WorldGrammar, schema: SystemSchema, world: ReturnType<typeof observe>, collection: string, pk: string, row: Record<string, unknown>): { related: RelatedEntity[]; more: number } {
+  const out: RelatedEntity[] = [];
+  const describe = (c: string, rowPk: string, r: Record<string, unknown> | undefined, direction: 'to' | 'from', field: string, crossSystem: boolean) => {
+    const k = grammar.kinds.find((x) => x.collection === c && x.archetype !== 'npc') ?? grammar.kinds.find((x) => x.collection === c);
+    const id = k ? `${k.id}:${rowPk}` : null;
+    const shown = id ? world.entities.find((e) => e.id === id) : undefined;
+    const label = shown?.label ?? (k?.labelField && r?.[k.labelField] != null ? String(r[k.labelField]) : `${c} #${rowPk}`);
+    const violations = world.violations.filter((v) => v.collection === c && String(v.pk) === rowPk).map((v) => ({ title: v.title, severity: v.severity }));
+    out.push({ entityId: shown ? id : null, collection: c, pk: rowPk, label, title: k?.title ?? c, direction, field, crossSystem, violations });
+  };
+  const col = findCollection(schema, collection)!;
+  // 이 행이 가리키는 곳
+  for (const f of col.fields) {
+    if (!f.ref || row[f.name] === null || row[f.name] === undefined) continue;
+    const target = findCollection(schema, f.ref.collection);
+    if (!target) continue;
+    const r = (snap.collections[target.name] ?? []).find((x) => String(x[f.ref!.field]) === String(row[f.name]));
+    describe(target.name, String(r ? pkOf(r, target) : row[f.name]), r, 'to', f.name, !!f.ref.crossSystem);
+  }
+  // 이 행을 가리키는 곳
+  for (const c of schema.collections) {
+    for (const f of c.fields) {
+      if (f.ref?.collection !== collection) continue;
+      const mine = row[f.ref.field];
+      for (const r of snap.collections[c.name] ?? []) if (String(r[f.name]) === String(mine)) describe(c.name, String(pkOf(r, c)), r, 'from', f.name, !!f.ref.crossSystem);
+    }
+  }
+  const rank = (x: RelatedEntity) => (x.violations.length ? 0 : 2) + (x.crossSystem ? 0 : 1);
+  out.sort((a, b) => rank(a) - rank(b));
+  return { related: out.slice(0, RELATED_MAX), more: Math.max(0, out.length - RELATED_MAX) };
 }

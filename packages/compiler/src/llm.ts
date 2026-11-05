@@ -86,8 +86,9 @@ ${channels}
 9. route 필드는 반드시 참조(ref) 필드여야 하며, 가리키는 컬렉션은 건물로 그려져야 한다.
 10. 불변식은 DB가 이미 강제하지 않지만 깨지면 사고인 규칙(예: 재고 ≥ 0, 수정시각 ≥ 생성시각, 참조 대상 존재)을 찾아라. 이상 현상 종류:
 ${anomalies}
-11. 제목·설명은 한국어. id 는 영문 소문자와 밑줄. sprite 는 ${SPRITES.join(', ')} 중 하나, region theme 은 ${REGION_THEMES.join(', ')} 중 하나.
-12. 해당 없는 필드는 null 로 채운다.
+11. 컬렉션에 system 이 여럿이면(여러 시스템을 한 세계로 묶음) 시스템마다 다른 지역(region)을 써라. 다른 시스템을 가리키는 참조(crossSystem)는 사실이므로 그대로 둬라.
+12. 제목·설명은 한국어. id 는 영문 소문자와 밑줄. sprite 는 ${SPRITES.join(', ')} 중 하나, region theme 은 ${REGION_THEMES.join(', ')} 중 하나.
+13. 해당 없는 필드는 null 로 채운다.
 
 검증기가 문법을 수천 개의 무작위 상태로 검사한다(GetPut, PutGet, 국소성, 행동 법칙). 반례가 돌아오면 원인을 고친 전체 초안을 다시 내라.`;
 }
@@ -101,6 +102,7 @@ export function describeSchemaForPrompt(schema: SystemSchema): string {
         name: c.name,
         primaryKey: c.primaryKey,
         rows: c.rowCountHint,
+        ...(c.system ? { system: c.system } : {}),
         fields: c.fields.map((f) => ({
           name: f.name,
           type: f.type,

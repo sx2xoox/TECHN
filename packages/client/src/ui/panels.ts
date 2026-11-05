@@ -149,6 +149,8 @@ function invariantBadge(i: Invariant) {
 
 export interface InspectorHandlers {
   onClose(): void;
+  /** 연결된 곳을 눌러 그쪽을 살펴본다 */
+  onSelect(entityId: string): void;
   onAffordance(entityId: string, affordanceId: string): void;
   onInvariant(id: string, status: 'confirmed' | 'dismissed'): void;
 }
@@ -272,9 +274,32 @@ export class Inspector {
           h('li', { class: c.relation },
             h('span', { class: 'mono t' }, `+${c.at - t0}ms`),
             h('span', { class: 'rel' }, { self: '자신', referencing: '참조', referenced: '대상' }[c.relation]),
-            h('span', null, h('strong', null, `${c.collection} #${c.pk}`), ` ${c.summary}`),
+            h('span', null,
+              h('strong', null, `${c.collection} #${c.pk}`), ` ${c.summary}`,
+              c.crossSystem ? h('span', { class: 'badge cross' }, '다른 시스템') : null,
+              c.broke ? h('span', { class: 'badge anomaly' }, `법칙 어김: ${c.broke}`) : null,
+            ),
           ))),
       );
+    }
+
+    // 연결된 곳(다른 시스템 포함): 저쪽이 아프면 먼저 보인다
+    if (m.related?.length) {
+      this.el.append(this.stable('related', JSON.stringify([m.entityId, m.related, m.relatedMore]), () =>
+        h('div', null,
+          h('h3', null, '연결된 곳 ', h('span', { class: 'muted small' }, '(참조로 바로 이어진 곳 · 지도에 점선)')),
+          h('ul', { class: 'related' }, (m.related ?? []).map((r) =>
+            h('li', { class: [r.violations.length ? 'sick' : '', r.crossSystem ? 'cross' : ''].join(' ') },
+              h('span', { class: 'dir', title: r.direction === 'to' ? '이것이 가리키는 곳' : '이것을 가리키는 곳' }, r.direction === 'to' ? '→' : '←'),
+              h('span', null,
+                r.entityId ? h('button', { class: 'link', onclick: () => this.hnd.onSelect(r.entityId!) }, r.label) : h('span', null, r.label),
+                ' ', h('span', { class: 'muted small' }, `${r.title} · ${r.field}`),
+                r.crossSystem ? h('span', { class: 'badge cross' }, '다른 시스템') : null,
+                ...r.violations.map((v) => h('div', { class: 'small bad' }, `⚠ ${v.title}`)),
+              ),
+            ))),
+          m.relatedMore ? h('p', { class: 'muted small' }, `외 ${m.relatedMore}곳`) : null,
+        )));
     }
 
     // 원본 데이터 ↔ 세계 표현

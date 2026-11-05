@@ -100,6 +100,25 @@ export interface InspectMessage {
   causes: CauseEvent[];
   diagnosis: Diagnosis | null;
   affordances: AffordanceOption[];
+  /** 참조로 바로 이어진 곳(이 행이 가리키는 곳 + 이 행을 가리키는 곳). 다른 시스템도 포함 */
+  related?: RelatedEntity[];
+  /** related 에 다 싣지 못한 수 */
+  relatedMore?: number;
+}
+
+export interface RelatedEntity {
+  /** 세계에 그려진 개체면 그 id(누르면 그쪽을 살펴본다) */
+  entityId: string | null;
+  collection: string;
+  pk: Pk;
+  label: string;
+  /** 종류 이름(예: 관리소) */
+  title: string;
+  /** to: 이 행이 가리킴, from: 저쪽이 이 행을 가리킴 */
+  direction: 'to' | 'from';
+  field: string;
+  crossSystem: boolean;
+  violations: { title: string; severity: Violation['severity'] }[];
 }
 
 export interface DryRunMessage {

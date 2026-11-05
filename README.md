@@ -494,6 +494,49 @@ Kubernetes 의 약속은 '원하는 상태(spec)로 실제 상태(status)를 맞
   - 세계에서 '복제본 늘리기'를 승인하면 Kubernetes 가 실제로 새 파드를 띄우고, 관측으로 확인되는지. 되돌리면 원래대로 돌아오는지.
   - 설정 없이 `isomorph connect kubernetes` 한 줄로 세계가 열리는지(`packages/server/test/kubernetes.real.test.ts`).
 
+### 여러 시스템을 한 세계로 — 원인이 다른 시스템에 있을 때
+
+![클러스터(k8s)와 서비스(otel)가 한 세계에 — 시스템마다 따로 구역](docs/screenshots/23-stack.png)
+
+장애의 원인은 자주 다른 시스템에 있습니다. 결제 서비스가 실패하는 이유가 코드가 아니라, 클러스터에서 그 서비스의 파드가 쓰러진 것일 수 있습니다. 그래서 여러 시스템을 한 세계에 함께 엽니다.
+
+```bash
+npm run isomorph -- connect kubernetes otel
+```
+
+```bash
+npm run isomorph -- connect postgres://user:pass@localhost:5432/app otel kubernetes
+```
+
+- **시스템마다 구역**: 컬렉션 이름 앞에 시스템 이름이 붙고(`k8s_deployments`, `otel_services`), 지도에는 시스템마다 따로 구역이 생깁니다.
+- **시스템 사이 연결을 스스로 찾습니다.**
+  - 어댑터가 '같은 이름 체계'(joinKey)를 표시합니다. 예를 들어 OpenTelemetry 의 `service.name` 과 Kubernetes 디플로이먼트 이름은 둘 다 `service` 입니다.
+  - 묶을 때 같은 체계끼리 참조로 잇습니다. 상대 시스템에 실제로 그 행이 있을 때만 이으므로, 트레이스를 보내지 않는 앱에 '대상 없음' 거짓 경보가 생기지 않습니다.
+  - 같은 이름이 둘 이상이면(두 네임스페이스의 `web`) 잇지 않습니다.
+  - 설정으로 직접 이을 수도 있습니다: `"links": [{ "from": "k8s.deployments.name", "to": "otel.services.id" }]`.
+- **원인 진단이 연결을 따라갑니다.** 위반이 시작되기 직전에 연결된 곳이 '먼저 자기 법칙을 어겼다면' 그것을 원인 후보로 짚습니다.
+  - 아래 화면에서 payments 서비스의 실패를 누르면 이렇게 진단합니다: "다른 시스템의 연결된 곳이 먼저 법칙을 어김 — k8s_deployments #shop/payments 가 '준비된 복제본 수가 원하는 수에 닿아야 함' 을 먼저 어겼고(ready_replicas: 2 → 0)…"
+  - 순서를 봅니다. 나중에 실패한 서비스를 디플로이먼트의 원인으로 삼지 않고, 같은 순간의 변화도 원인으로 돌리지 않습니다.
+  - 같은 시스템 안의 참조에도 똑같이 적용됩니다(예: CrashLoop 에 빠진 파드 → 준비가 모자란 디플로이먼트).
+- **살펴보기의 '연결된 곳'**: 참조로 바로 이어진 곳을 보여 줍니다. 법칙을 어기는 곳과 다른 시스템을 먼저 보여 주고, 누르면 그쪽으로 건너갑니다.
+- **지도의 점선**: 고른 개체에서 연결된 곳으로 점선이 흐릅니다. 법칙을 어기는 곳은 빨강, 다른 시스템은 파랑입니다. 상대가 화면 밖이면 둘 다 보이게 시야를 넓힙니다.
+- **행동은 제 시스템으로**: 드라이런 명령 앞에 `[k8s]` 처럼 어느 시스템인지 붙습니다. 시스템 사이 연결 자체는 바꿀 수 없습니다.
+
+![실패한 서비스를 누르면 — 원인은 다른 시스템(클러스터)의 디플로이먼트, 지도에 빨간 점선](docs/screenshots/24-stack-inspect.png)
+
+**어떻게 확인했나**:
+
+- 브라우저 E2E(`npm run e2e:stack`)는 아래 흐름을 실제 브라우저로 끝까지 확인합니다. 이 절의 스크린샷도 이 시험에서 나왔습니다. 클러스터는 실제 응답 모양의 시험용 API, 서비스는 진짜 OpenTelemetry SDK 입니다.
+  - payments 파드가 준비를 잃습니다.
+  - 그 뒤 payments 호출이 실패합니다.
+  - 실패한 서비스를 누르면 진단이 클러스터를 가리킵니다.
+  - '연결된 곳'에 상대의 위반이 보이고, 누르면 건너갑니다.
+- CI 의 실제 클러스터 작업(kind)에서는 **실패를 꾸미지 않습니다**(`packages/server/test/stack.real.test.ts`).
+  - payments 서비스가 클러스터 안의 실제 nginx 파드를 NodePort 로 부릅니다.
+  - 시험이 디플로이먼트의 이미지를 없는 것으로 바꾸면 파드가 사라지고, 호출이 실제로 실패합니다.
+  - ISOMORPH 가 그 실패의 원인으로 클러스터의 payments 디플로이먼트를 짚는지 확인합니다.
+- 같은 작업에서 `isomorph connect kubernetes otel` 한 줄로 두 시스템이 한 세계로 열리는지도 확인합니다.
+
 ### AI 에이전트 세계 (기획안 시나리오 C)
 
 [`examples/adapters/claude-code.ts`](examples/adapters/claude-code.ts) 는 SDK 로 만든 예제로, Claude Code 세션 기록(JSONL)을 마을로 엽니다.
@@ -593,8 +636,9 @@ npm run bench:lab
 npm run study:selftest
 ```
 
-- `npm test`: 단위·통합 테스트 123개입니다. 실제 시스템 테스트 7개(PostgreSQL·Docker 3개, Kubernetes 4개)는 환경변수로 켭니다(아래).
+- `npm test`: 단위·통합 테스트 134개입니다. 실제 시스템 테스트 9개(PostgreSQL·Docker 3개, Kubernetes 4개, 클러스터+서비스 한 세계 2개)는 환경변수로 켭니다(아래).
 - `npm run e2e:snapshot`: 공유본을 내려받아 네트워크를 막은 브라우저로 엽니다.
+- `npm run e2e:stack`: 클러스터와 서비스를 한 세계로 열고, 다른 시스템에 있는 원인을 브라우저에서 찾아갑니다.
 - `npm run bench:compile`: 컴파일러 KPI 를 잽니다.
 - `npm run e2e`: 실제 브라우저로 데모 시나리오를 처음부터 끝까지 수행합니다.
 - `npm run bench:latency`: 상태 변화가 세계에 반영되기까지의 지연을 폴링/푸시 두 방식으로 잽니다.
@@ -605,7 +649,7 @@ npm run study:selftest
   - 타입 검사, 테스트, 컴파일 벤치마크, 빌드.
   - 실제 PostgreSQL 16 + Docker 통합 테스트.
   - 실제 Kubernetes(kind) 클러스터 통합 테스트.
-  - 브라우저 E2E(데모, 공유본).
+  - 브라우저 E2E(데모, 공유본, 여러 시스템 한 세계).
   - 실험 도구 자가 시험.
   - 컨테이너 이미지 빌드와 연기 시험.
 
@@ -623,7 +667,7 @@ kubectl config view --raw -o json --minify > /tmp/kubeconfig.json
 ISOMORPH_TEST_KUBECONFIG=/tmp/kubeconfig.json npx vitest run packages/server/test/kubernetes.real.test.ts
 ```
 
-Kubernetes 시험에는 클러스터에 `default/web`(nginx, 복제본 2개)과 `default/broken`(없는 이미지)이 있어야 합니다. CI 의 kind 작업을 참고하세요.
+Kubernetes 시험에는 클러스터에 `default/web`(nginx, 복제본 2개)과 `default/broken`(없는 이미지)이 있어야 합니다. 클러스터+서비스 시험(`packages/server/test/stack.real.test.ts`)은 NodePort 로 연 `default/payments`(nginx) 주소를 `ISOMORPH_TEST_PAYMENTS_URL` 로 더 받습니다. 이 시험은 그 디플로이먼트의 이미지를 바꿔 망가뜨리므로 시험용 클러스터에서만 돌리세요. CI 의 kind 작업을 참고하세요.
 
 | 기획안 KPI | 목표 | 측정 결과 | 판정 |
 |---|---|---|---|
@@ -661,6 +705,7 @@ E2E 가 확인하는 것: 세계가 열림 → 반짝 세일 경쟁 조건이 �
 - **행 제한**: 큰 테이블은 최신 `rowLimit` 행만 봅니다. 창 밖 참조 확인(`lookup`)은 PostgreSQL 어댑터에만 있습니다. HTTP·사용자 어댑터는 `lookup` 을 구현해야 같은 오판을 피할 수 있습니다. 시맨틱 줌은 렌더링 부담을 줄일 뿐, 관측량 자체를 줄이지는 않습니다.
 - **원인 시각의 정밀도**: 원인 추적의 시각은 관측 시각(푸시 관측이면 변경 직후)과 행의 `created_at`/`updated_at` 에 기댑니다.
 - **세계 테마**: 지금은 '픽셀 마을' 하나입니다. Kubernetes 도 마을 문법으로 그립니다(서버탑·관리소·공장). 항구 도시 같은 다른 문법 계열은 아직입니다.
+- **여러 시스템 한 세계**: 자동 연결은 어댑터가 표시한 이름 체계(지금은 OpenTelemetry 서비스 ↔ Kubernetes 디플로이먼트)만 봅니다. 데이터베이스 행과 서비스 사이처럼 표시가 없는 연결은 설정으로 이어야 합니다. 원인 진단은 '연결된 곳이 먼저 법칙을 어겼다'는 시간 순서만 봅니다. 두 시스템의 관측 시각이 어긋나면 틀릴 수 있고, 한 단계 너머(연결의 연결)는 따라가지 않습니다.
 - **Kubernetes**: 노드·디플로이먼트·파드·이벤트만 봅니다(StatefulSet·DaemonSet·Job·Service·Ingress 는 아직). 쓰기는 복제본 수 하나입니다. 이벤트는 최근 200개만 봅니다. 큰 클러스터에서 목록 전체를 다시 읽는 비용은 재지 않았습니다.
 - **색각 접근성**: 미리보기는 근사입니다. 모양은 아주 멀리서 보면(구역 요약) 보이지 않습니다. 색각 이상이 있는 사람과의 확인은 아직 하지 않았습니다.
 - **OpenTelemetry**: OTLP/HTTP 의 트레이스만 받습니다(gRPC·지표·로그는 아직). 서비스 사이 관계는 부모 스팬으로만 찾습니다. 부모가 아직 도착하지 않은 스팬이나 계측되지 않은 외부 호출은 '부른 쪽'이 비어 보입니다.
@@ -670,13 +715,13 @@ E2E 가 확인하는 것: 세계가 열림 → 반짝 세일 경쟁 조건이 �
 ```
 packages/core       세계 문법·렌즈·검증기·불변식·원인 추적·규칙 학습·가설 시뮬레이터·프로토콜 (브라우저/Node 공용)
 packages/compiler   Metaphor Compiler (규칙 기반 + Claude API) · 벤치마크 스키마
-packages/adapters   Postgres · HTTP/JSON · Docker · Kubernetes · OpenTelemetry(OTLP JSON·protobuf) · 어댑터 SDK(defineAdapter)
+packages/adapters   Postgres · HTTP/JSON · Docker · Kubernetes · OpenTelemetry(OTLP JSON·protobuf) · 여러 시스템 묶기(composite) · 어댑터 SDK(defineAdapter)
 packages/server     런타임 · 이벤트 저장소 · WebSocket 서버 · CLI · 사용자 실험 서버·분석
 packages/client     PixiJS 렌더러 · 한국어 UI · 실험 화면(study.html)
 packages/assets     PixelLab 에셋 파이프라인
 apps/demo-shop      경쟁 조건 버그가 있는 데모 쇼핑몰 · 복제 DB 샌드박스
 examples/           연결 설정 예시 · 예제 어댑터(Claude Code 세션) · 합성 세션 기록기 · OTel 계측 예제 서비스
-scripts/            demo · demo-agent · demo-otel · e2e · snapshot-e2e · bench-(compile|latency|lab|real-schemas|heldout-schemas|a11y) · study(·analyze·selftest·power)
+scripts/            demo · demo-agent · demo-otel · e2e · snapshot-e2e · stack-e2e · bench-(compile|latency|lab|real-schemas|heldout-schemas|a11y) · study(·analyze·selftest·power)
 docs/study/         사용자 실험 진행자 문서(계획서·사전 등록·모집·동의서·점검표)
 Dockerfile          컨테이너 이미지(비특권 사용자, 바깥 주소는 토큰 필수)
 ```

@@ -104,6 +104,13 @@ button.chip { cursor: pointer; }
 .causes li.self { color: #ffd7d0; }
 .causes .t { color: var(--muted); text-align: right; }
 .causes .rel { color: var(--muted); }
+.badge.cross { background: #23406b; color: #cfe3ff; border-color: #4a7bc0; margin-left: 4px; }
+.causes .badge { margin-left: 4px; }
+.related { list-style: none; padding: 0; margin: 0; }
+.related li { display: grid; grid-template-columns: 18px 1fr; gap: 4px; padding: 4px 0; border-bottom: 1px solid #3a3343; font-size: 12px; line-height: 1.45; }
+.related li.sick { background: rgba(230, 25, 25, 0.08); }
+.related .dir { color: var(--muted); text-align: center; }
+.related button.link { background: none; border: 0; padding: 0; color: #9cc8ff; font: inherit; cursor: pointer; text-decoration: underline; }
 table.fields { width: 100%; border-collapse: collapse; font-size: 11px; }
 table.fields th { text-align: left; color: var(--muted); font-weight: 400; border-bottom: 1px solid var(--line); padding: 3px; }
 table.fields td { padding: 4px 3px; border-bottom: 1px solid #3a3343; vertical-align: top; word-break: break-all; }

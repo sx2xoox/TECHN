@@ -26,10 +26,14 @@ export function loadConfig(file: string): IsomorphConfig {
   const base = path.dirname(path.resolve(file));
   const rel = (p?: string) => (p ? path.resolve(base, p) : undefined);
   const relOpt = (v: unknown) => (typeof v === 'string' && (v.startsWith('./') || v.startsWith('../')) ? rel(v) : v);
-  const adapter =
-    raw.adapter.type === 'module'
-      ? { ...raw.adapter, path: rel(raw.adapter.path)!, options: Object.fromEntries(Object.entries(raw.adapter.options ?? {}).map(([k, v]) => [k, relOpt(v)])) }
-      : raw.adapter;
+  // 직접 만든 모듈의 경로는 설정 파일 기준(여러 시스템 묶음 안에 있어도)
+  const resolve = (a: AdapterConfig): AdapterConfig =>
+    a.type === 'module'
+      ? { ...a, path: rel(a.path)!, options: Object.fromEntries(Object.entries(a.options ?? {}).map(([k, v]) => [k, relOpt(v)])) }
+      : a.type === 'composite'
+        ? { ...a, parts: a.parts.map((p) => ({ ...p, adapter: resolve(p.adapter) })) }
+        : a;
+  const adapter = resolve(raw.adapter);
   return { ...raw, adapter, grammarPath: rel(raw.grammarPath), storePath: raw.storePath === ':memory:' ? raw.storePath : rel(raw.storePath), assetsDir: rel(raw.assetsDir) };
 }
 
@@ -53,33 +57,68 @@ export function loadAssets(dir?: string): AssetManifest | null {
  *   otel   OpenTelemetry 트레이스 수신(OTLP/HTTP JSON, 4318)
  *   docker   로컬 Docker 엔진
  */
-export function configFromTarget(targets: string[], opts: { schema?: string; port?: number; host?: string; write?: IsomorphConfig['writeMode']; context?: string; kubeconfig?: string } = {}): IsomorphConfig {
-  const [target] = targets;
-  if (!target) throw new Error('연결할 대상을 주세요: postgres://… · https://… · otel · docker · kubernetes');
-  let adapter: AdapterConfig;
+type TargetOpts = { schema?: string; namespace?: string; port?: number; host?: string; write?: IsomorphConfig['writeMode']; context?: string; kubeconfig?: string };
+
+const TARGETS_HELP = 'postgres://… · https://… · otel · docker · kubernetes';
+
+/** 대상 하나(또는 같은 호스트의 HTTP 경로 묶음) → 어댑터 설정과 짧은 이름 */
+function adapterFor(group: string[], opts: TargetOpts): { name: string; adapter: AdapterConfig } {
+  const [target] = group;
   if (/^postgres(ql)?:\/\//i.test(target)) {
     const system = decodeURIComponent(new URL(target).pathname.replace(/^\//, '')) || 'postgres';
-    adapter = { type: 'postgres', connectionString: target, system, ...(opts.schema ? { schema: opts.schema } : {}) };
-  } else if (/^https?:\/\//i.test(target)) {
-    const urls = targets.map((t) => new URL(t));
-    const origin = urls[0].origin;
-    if (urls.some((u) => u.origin !== origin)) throw new Error('HTTP 대상은 모두 같은 호스트여야 합니다');
-    adapter = {
-      type: 'http',
-      system: urls[0].hostname,
-      baseUrl: origin,
-      collections: urls.map((u) => ({ name: u.pathname.split('/').filter(Boolean).at(-1) ?? 'items', path: `${u.pathname}${u.search}` })),
+    return { name: 'db', adapter: { type: 'postgres', connectionString: target, system, ...(opts.schema ? { schema: opts.schema } : {}) } };
+  }
+  if (/^https?:\/\//i.test(target)) {
+    const urls = group.map((t) => new URL(t));
+    return {
+      name: 'api',
+      adapter: {
+        type: 'http',
+        system: urls[0].hostname,
+        baseUrl: urls[0].origin,
+        collections: urls.map((u) => ({ name: u.pathname.split('/').filter(Boolean).at(-1) ?? 'items', path: `${u.pathname}${u.search}` })),
+      },
     };
-  } else if (target === 'otel') {
+  }
+  if (target === 'otel') {
     // 수신기도 같은 주소에서 듣는다(컨테이너에서는 0.0.0.0)
-    adapter = { type: 'otel', port: 4318, ...(opts.host ? { host: opts.host } : {}), ...(process.env.ISOMORPH_OTLP_TOKEN ? { token: process.env.ISOMORPH_OTLP_TOKEN } : {}) };
-  } else if (target === 'docker') {
-    adapter = { type: 'docker' };
-  } else if (target === 'kubernetes' || target === 'k8s') {
-    // --schema 는 네임스페이스로 읽는다(그 네임스페이스만)
-    adapter = { type: 'kubernetes', ...(opts.schema ? { namespace: opts.schema } : {}), ...(opts.context ? { context: opts.context } : {}), ...(opts.kubeconfig ? { kubeconfig: opts.kubeconfig } : {}) };
-  } else {
-    throw new Error(`알 수 없는 대상: ${target} (postgres://… · https://… · otel · docker · kubernetes)`);
+    return { name: 'otel', adapter: { type: 'otel', port: 4318, ...(opts.host ? { host: opts.host } : {}), ...(process.env.ISOMORPH_OTLP_TOKEN ? { token: process.env.ISOMORPH_OTLP_TOKEN } : {}) } };
+  }
+  if (target === 'docker') return { name: 'docker', adapter: { type: 'docker' } };
+  if (target === 'kubernetes' || target === 'k8s') {
+    const ns = opts.namespace ?? opts.schema;
+    return { name: 'k8s', adapter: { type: 'kubernetes', ...(ns ? { namespace: ns } : {}), ...(opts.context ? { context: opts.context } : {}), ...(opts.kubeconfig ? { kubeconfig: opts.kubeconfig } : {}) } };
+  }
+  throw new Error(`알 수 없는 대상: ${target} (${TARGETS_HELP})`);
+}
+
+/**
+ * 명령줄 대상 → 설정. 종류가 다른 대상을 여러 개 주면 한 세계로 묶는다(시스템 사이 연결은 자동으로 찾는다).
+ *   connect postgres://…/shop otel kubernetes
+ */
+export function configFromTarget(targets: string[], opts: TargetOpts = {}): IsomorphConfig {
+  if (!targets.length) throw new Error(`연결할 대상을 주세요: ${TARGETS_HELP}`);
+  // 같은 호스트의 HTTP 경로는 하나로 묶는다
+  const groups: string[][] = [];
+  for (const t of targets) {
+    const origin = /^https?:\/\//i.test(t) ? new URL(t).origin : null;
+    const g = origin ? groups.find((x) => /^https?:\/\//i.test(x[0]) && new URL(x[0]).origin === origin) : undefined;
+    if (g) g.push(t);
+    else groups.push([t]);
+  }
+  const parts = groups.map((g) => adapterFor(g, opts));
+  let adapter: AdapterConfig;
+  if (parts.length === 1) adapter = parts[0].adapter;
+  else {
+    const seen = new Map<string, number>();
+    adapter = {
+      type: 'composite',
+      parts: parts.map((p) => {
+        const n = (seen.get(p.name) ?? 0) + 1;
+        seen.set(p.name, n);
+        return { name: n === 1 ? p.name : `${p.name}${n}`, adapter: p.adapter };
+      }),
+    };
   }
   return {
     adapter,

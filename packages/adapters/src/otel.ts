@@ -185,13 +185,14 @@ export class OtelAdapter implements Adapter {
     return readOnlyExcept(markSensitive({
       system: this.system,
       source: 'custom',
-      constraints: [],
+      // 수신기가 계산한 건강 상태를 법칙으로: 최근 1분 오류 비율이 절반 이상이면 '실패'
+      constraints: [{ collection: 'services', expr: { op: 'cmp', field: 'status', cmp: '!=', value: 'failing' }, description: '서비스의 오류 비율이 절반을 넘으면 안 됨(실패 상태)', enforced: false }],
       collections: [
         {
           name: 'services',
           primaryKey: 'id',
           fields: [
-            { name: 'id', type: 'string', nullable: false },
+            { name: 'id', type: 'string', nullable: false, joinKey: 'service' },
             { name: 'name', type: 'string', nullable: false },
             { name: 'status', type: 'string', nullable: false, enumValues: ['healthy', 'degraded', 'failing'] },
             { name: 'calls_per_min', type: 'integer', nullable: false },

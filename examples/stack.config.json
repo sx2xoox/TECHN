@@ -1,0 +1,16 @@
+{
+  "adapter": {
+    "type": "composite",
+    "parts": [
+      { "name": "k8s", "adapter": { "type": "kubernetes", "namespace": "shop" } },
+      { "name": "otel", "adapter": { "type": "otel", "port": 4318 } },
+      { "name": "db", "adapter": { "type": "postgres", "connectionString": "postgres://isomorph:isomorph@localhost:5432/shop", "system": "shop" } }
+    ],
+    "links": []
+  },
+  "compile": { "mode": "auto" },
+  "writeMode": "read-only",
+  "pollMs": 2000,
+  "port": 4005,
+  "storePath": "../.data/events-stack.sqlite"
+}

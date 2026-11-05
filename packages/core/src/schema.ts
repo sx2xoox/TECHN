@@ -6,6 +6,8 @@ export type FieldType = 'integer' | 'number' | 'string' | 'boolean' | 'timestamp
 export interface FieldRef {
   collection: string;
   field: string;
+  /** 다른 시스템을 가리키는 연결(여러 시스템을 한 세계로 묶을 때 생긴다) */
+  crossSystem?: boolean;
 }
 
 export interface FieldStats {
@@ -30,6 +32,11 @@ export interface FieldSchema {
   refEnforced?: boolean;
   /** 시스템(어댑터)이 이 필드로의 쓰기를 받지 않는다: 보이기만 하고, 세계에서 바꾸는 행동은 만들지 않는다 */
   readOnly?: boolean;
+  /**
+   * 다른 시스템에서도 같은 것을 가리키는 이름 체계(예: 'service' — OpenTelemetry 의 service.name 과 Kubernetes 디플로이먼트 이름).
+   * 여러 시스템을 한 세계로 묶을 때 같은 joinKey 끼리 자동으로 연결한다.
+   */
+  joinKey?: string;
   stats?: FieldStats;
 }
 
@@ -39,6 +46,8 @@ export interface CollectionSchema {
   fields: FieldSchema[];
   rowCountHint?: number;
   description?: string;
+  /** 여러 시스템을 한 세계로 묶었을 때 이 컬렉션이 속한 시스템의 짧은 이름(db·otel·k8s …) */
+  system?: string;
 }
 
 /** DB CHECK 제약처럼 시스템이 스스로 선언한 규칙 */

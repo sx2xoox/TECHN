@@ -3,14 +3,15 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { attachStats, formatReport, verifyGrammar } from '@isomorph/core';
 import { anthropicDraftModel, compile } from '@isomorph/compiler';
-import { loadAdapter, PostgresAdapter } from '@isomorph/adapters';
+import { CompositeAdapter, loadAdapter, OtelAdapter, PostgresAdapter } from '@isomorph/adapters';
 import { configFromTarget, loadAssets, loadConfig, loadGrammar } from './config.ts';
 import { IsomorphRuntime } from './runtime.ts';
 import { serve } from './server.ts';
 
 /**
  * isomorph connect <postgres://…|https://…|otel|docker|kubernetes> [--schema s] [--port 4000] [--write low]   설정 파일 없이 바로(읽기 전용)
- *   kubernetes: [--context c] [--kubeconfig f] [--schema 네임스페이스]
+ *   kubernetes: [--context c] [--kubeconfig f] [--namespace n]
+ *   대상을 여러 개(종류가 달라도) 주면 한 세계로 묶는다: connect postgres://… otel kubernetes
  * isomorph study   사용자 실험 서버(STUDY_* 환경변수, scripts/study.ts 와 같음)
  * isomorph snapshot <대상|--config x.json> [--observe 20] [--minutes 10] [--out world.html]   공유본(HTML 한 파일) 만들기
  * isomorph serve   --config isomorph.config.json   세계를 연다
@@ -50,7 +51,7 @@ async function main() {
     targetLike
       ? configFromTarget(
           args.slice(1).filter((a, i, all) => !a.startsWith('--') && !(all[i - 1] ?? '').startsWith('--')),
-          { schema: flag('schema') ?? flag('namespace'), port: flag('port') ? Number(flag('port')) : undefined, host: flag('host'), write: flag('write') as never, context: flag('context'), kubeconfig: flag('kubeconfig') },
+          { schema: flag('schema'), namespace: flag('namespace'), port: flag('port') ? Number(flag('port')) : undefined, host: flag('host'), write: flag('write') as never, context: flag('context'), kubeconfig: flag('kubeconfig') },
         )
       : loadConfig(configPath);
   if (cmd === 'connect') log(`연결: ${config.adapter.type} · 쓰기 ${config.writeMode}${config.writeMode === 'read-only' ? '(바꾸려면 --write low|medium|high)' : ''}`);
@@ -108,6 +109,10 @@ async function main() {
 
   // OTLP 수신기는 설정이 위험하면(바깥 주소인데 수신 토큰 없음) 재시도하지 말고 바로 멈춘다
   if (config.adapter.type === 'otel') await adapter.connect();
+  if (adapter instanceof CompositeAdapter) {
+    for (const p of adapter.parts) if (p.adapter instanceof OtelAdapter) await p.adapter.connect();
+    log(`한 세계로 묶음: ${adapter.parts.map((p) => `${p.name}(${p.adapter.system})`).join(' · ')}`);
+  }
   const runtime = new IsomorphRuntime({
     adapter,
     grammar: config.grammarPath && fs.existsSync(config.grammarPath) ? loadGrammar(config.grammarPath) : undefined,

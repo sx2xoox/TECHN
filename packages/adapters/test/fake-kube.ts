@@ -13,6 +13,10 @@ export interface FakeKube {
   /** 다른 누군가가 kubectl 로 바꾼 것처럼(newPodsReady=false 면 새 파드가 준비되지 못한다: 이미지·자원 문제) */
   scaleBehindBack(id: string, replicas: number, newPodsReady?: boolean): void;
   readyOf(id: string): number;
+  /** 디플로이먼트를 하나 더(파드는 모두 준비) */
+  addDeployment(name: string, namespace: string, replicas: number): void;
+  /** 파드 중 n 개만 준비 상태로(나머지는 준비 안 됨: 프로브 실패 등) */
+  setReady(id: string, n: number): void;
   podsOf(id: string): number;
   close(): Promise<void>;
 }
@@ -128,6 +132,23 @@ export async function startFakeKube(): Promise<FakeKube> {
     patches,
     scaleBehindBack: (id, n, ready) => setReplicas(find(id), n, ready),
     readyOf: (id) => Number(find(id).status.readyReplicas),
+    addDeployment: (name, ns, n) => {
+      addDeployment(name, ns, n, n);
+      for (let i = 0; i < n; i++) notify('pods', 'ADDED', addPod(name, ns));
+      notify('deployments', 'ADDED', find(`${ns}/${name}`));
+    },
+    setReady: (id, n) => {
+      const d = find(id);
+      const mine = pods.filter((p) => `${p.metadata.namespace}/${p.metadata.ownerReferences[0].name.replace(/-[a-z0-9]+$/, '')}` === id);
+      mine.forEach((p, i) => {
+        p.status.containerStatuses[0].ready = i < n;
+        p.metadata.resourceVersion = nextRv();
+        notify('pods', 'MODIFIED', p);
+      });
+      d.status.readyReplicas = Math.min(n, mine.length);
+      d.metadata.resourceVersion = nextRv();
+      notify('deployments', 'MODIFIED', d);
+    },
     podsOf: (id) => pods.filter((p) => `${p.metadata.namespace}/${p.metadata.ownerReferences[0].name.replace(/-[a-z0-9]+$/, '')}` === id).length,
     close: async () => {
       for (const s of watchers.values()) for (const r of s) r.end();

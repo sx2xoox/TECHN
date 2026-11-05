@@ -3,7 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { startShop } from '@isomorph/demo-shop';
-import { configFromTarget } from '../src/index.ts';
+import { configFromTarget, loadConfig } from '../src/index.ts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 
@@ -14,8 +14,22 @@ describe('isomorph connect', () => {
     expect(configFromTarget(['otel']).adapter).toMatchObject({ type: 'otel', port: 4318 });
     expect(configFromTarget(['k8s']).adapter).toEqual({ type: 'kubernetes' });
     expect(configFromTarget(['kubernetes'], { schema: 'shop', context: 'kind-isomorph' }).adapter).toEqual({ type: 'kubernetes', namespace: 'shop', context: 'kind-isomorph' });
-    expect(() => configFromTarget(['https://a.example.com/x', 'https://b.example.com/y'])).toThrow(/같은 호스트/);
+    // 종류가 다른 대상 여럿 → 한 세계(시스템마다 짧은 이름)
+    expect(configFromTarget(['postgres://u@db:5432/shop', 'otel', 'k8s'], { namespace: 'shop' }).adapter).toMatchObject({
+      type: 'composite',
+      parts: [
+        { name: 'db', adapter: { type: 'postgres', system: 'shop' } },
+        { name: 'otel', adapter: { type: 'otel' } },
+        { name: 'k8s', adapter: { type: 'kubernetes', namespace: 'shop' } },
+      ],
+    });
+    expect(configFromTarget(['https://a.example.com/x', 'https://b.example.com/y', 'https://a.example.com/z']).adapter).toMatchObject({
+      type: 'composite',
+      parts: [{ name: 'api', adapter: { baseUrl: 'https://a.example.com', collections: [{ name: 'x' }, { name: 'z' }] } }, { name: 'api2', adapter: { baseUrl: 'https://b.example.com' } }],
+    });
     expect(() => configFromTarget(['ftp://x'])).toThrow(/알 수 없는 대상/);
+    // 설정 파일로 여러 시스템 묶기: 예시가 그대로 읽힌다
+    expect(loadConfig(path.join(root, 'examples/stack.config.json')).adapter).toMatchObject({ type: 'composite', parts: [{ name: 'k8s' }, { name: 'otel' }, { name: 'db' }] });
   });
 
   it('opens a verified world from one command against a real PostgreSQL wire endpoint', async () => {
