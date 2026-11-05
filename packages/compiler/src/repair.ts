@@ -7,6 +7,7 @@ import {
   type VerificationReport,
   type WorldGrammar,
 } from '@isomorph/core';
+import { assignGlyphs } from '@isomorph/core';
 import { assignColors } from './lexicon.ts';
 
 /**
@@ -40,6 +41,7 @@ export function autoRepair(input: WorldGrammar, report: VerificationReport, sche
           const { map, fallback } = assignColors(Object.keys(binding.map));
           binding.map = map;
           binding.fallback = fallback;
+          binding.glyphs = assignGlyphs(Object.keys(map));
           actions.push({ code: issue.code, kind: k!.id, action: `${binding.field} 의 색을 값마다 다르게 재배정` });
         }
         break;

@@ -1,3 +1,4 @@
+import { GLYPH_3, GLYPH_5, type GlyphName } from '@isomorph/core';
 /**
  * 절차적 픽셀 아트. 외부 에셋 없이 코드로 그린 오리지널 16비트 풍 스프라이트.
  * (PixelLab 으로 생성한 에셋이 있으면 렌더러가 그것을 우선 사용한다)
@@ -347,7 +348,7 @@ const HAIR = '#3b2a20';
 const PANTS = '#3c4a6b';
 
 /** 12x16 걷는 인물(2프레임). shirt 는 tint 채널 색 */
-export function drawWalker(kind: string, shirt: string, frame: 0 | 1, carrying = false): HTMLCanvasElement {
+export function drawWalker(kind: string, shirt: string, frame: 0 | 1, carrying = false, glyph?: GlyphName | null): HTMLCanvasElement {
   const [c, ctx] = canvas(12, 16);
   if (kind === 'robot') {
     rect(ctx, 6, 0, 1, 2, OUT);
@@ -355,7 +356,10 @@ export function drawWalker(kind: string, shirt: string, frame: 0 | 1, carrying =
     box(ctx, 3, 2, 7, 5, '#9aa5b1');
     rect(ctx, 4, 4, 5, 1, '#5ce1e6');
     box(ctx, 2, 7, 9, 6, '#7f8a96');
-    box(ctx, 4, 8, 5, 3, shirt);
+    if (glyph) {
+      box(ctx, 3, 7, 7, 5, shirt);
+      drawGlyph(ctx, GLYPH_3[glyph], 5, 8, glyphInk(shirt));
+    } else box(ctx, 4, 8, 5, 3, shirt);
     rect(ctx, frame ? 3 : 4, 13, 2, 3, OUT);
     rect(ctx, frame ? 8 : 7, 13, 2, 3, OUT);
     return c;
@@ -375,6 +379,7 @@ export function drawWalker(kind: string, shirt: string, frame: 0 | 1, carrying =
   // 몸통
   box(ctx, 2, 7, 8, 5, shirt);
   rect(ctx, 3, 8, 1, 3, 'rgba(255,255,255,0.35)');
+  if (glyph) drawGlyph(ctx, GLYPH_3[glyph], 5, 8, glyphInk(shirt));
   // 다리
   const l = frame ? 3 : 4;
   const r = frame ? 7 : 6;
@@ -475,11 +480,29 @@ export function drawBubble(symbol: '!' | '?' | '✕' | '⏱', color = '#ffffff')
   return c;
 }
 
-export function drawFlag(color: string): HTMLCanvasElement {
-  const [c, ctx] = canvas(8, 10);
-  rect(ctx, 0, 0, 1, 10, OUT);
-  box(ctx, 1, 0, 7, 5, color);
-  rect(ctx, 2, 1, 2, 1, 'rgba(255,255,255,0.5)');
+/** 바탕색 위에서 잘 보이는 글리프 색(밝은 바탕엔 진한 색, 어두운 바탕엔 흰색) */
+function glyphInk(hex: string) {
+  const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.55 ? '#1b1520' : '#ffffff';
+}
+
+function drawGlyph(ctx: Ctx, pattern: string[], x: number, y: number, ink: string) {
+  pattern.forEach((row, dy) => [...row].forEach((ch, dx) => ch === '#' && rect(ctx, x + dx, y + dy, 1, 1, ink)));
+}
+
+/** 지붕 깃발: 색(색깔 채널) + 모양(글리프) — 색만으로 구분하지 않게 */
+export function drawFlag(color: string, glyph?: GlyphName | null): HTMLCanvasElement {
+  if (!glyph) {
+    const [c, ctx] = canvas(8, 10);
+    rect(ctx, 0, 0, 1, 10, OUT);
+    box(ctx, 1, 0, 7, 5, color);
+    rect(ctx, 2, 1, 2, 1, 'rgba(255,255,255,0.5)');
+    return c;
+  }
+  const [c, ctx] = canvas(12, 12);
+  rect(ctx, 0, 0, 1, 12, OUT);
+  box(ctx, 1, 0, 11, 7, color);
+  drawGlyph(ctx, GLYPH_5[glyph], 4, 1, glyphInk(color));
   return c;
 }
 

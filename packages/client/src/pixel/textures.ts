@@ -1,6 +1,6 @@
 import { Assets, Texture } from 'pixi.js';
 import type { AssetManifest, ColorName } from '@isomorph/core';
-import { PALETTE } from '@isomorph/core';
+import { PALETTE, type GlyphName } from '@isomorph/core';
 import {
   buildingSize,
   drawBubble,
@@ -62,9 +62,9 @@ export class TextureBank {
     return { ...buildingSize(sprite), scale: 1 };
   }
 
-  walker(sprite: string, color: ColorName | string | null, frame: 0 | 1, carrying = false): Texture {
+  walker(sprite: string, color: ColorName | string | null, frame: 0 | 1, carrying = false, glyph: GlyphName | null = null): Texture {
     const hex = color && color in PALETTE ? PALETTE[color as ColorName].hex : '#8a8f98';
-    return this.get(`w:${sprite}:${hex}:${frame}:${carrying}`, () => drawWalker(sprite, hex, frame, carrying));
+    return this.get(`w:${sprite}:${hex}:${frame}:${carrying}:${glyph}`, () => drawWalker(sprite, hex, frame, carrying, glyph));
   }
 
   tiny(colorIdx: number, frame: 0 | 1): Texture {
@@ -85,9 +85,9 @@ export class TextureBank {
   bubble(symbol: '!' | '?' | '✕' | '⏱') {
     return this.get(`bubble:${symbol}`, () => drawBubble(symbol));
   }
-  flag(color: ColorName | string) {
+  flag(color: ColorName | string, glyph: GlyphName | null = null) {
     const hex = color in PALETTE ? PALETTE[color as ColorName].hex : color;
-    return this.get(`flag:${hex}`, () => drawFlag(hex));
+    return this.get(`flag:${hex}:${glyph}`, () => drawFlag(hex, glyph));
   }
   tree(v: number) {
     return this.get(`tree:${v % 3}`, () => drawTree(v));

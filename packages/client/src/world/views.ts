@@ -1,5 +1,5 @@
 import { Container, Graphics, Rectangle, Sprite, Text, Texture } from 'pixi.js';
-import { PALETTE, type AnomalyKind, type ColorName, type WorldEntity } from '@isomorph/core';
+import { PALETTE, type AnomalyKind, type ColorName, type WorldEntity, type GlyphName } from '@isomorph/core';
 import type { TextureBank } from '../pixel/textures.ts';
 import { pathLength, pointAt, T, type Plot, type Point } from './layout.ts';
 
@@ -45,6 +45,8 @@ function seedOf(id: string) {
 export interface ViewContext {
   bank: TextureBank;
   showLabels: boolean;
+  /** 색깔 채널 값의 모양(글리프): 색만으로 구분하지 않게 */
+  glyphOf?: (e: WorldEntity) => GlyphName | null;
 }
 
 abstract class EntityView extends Container {
@@ -192,8 +194,9 @@ export class BuildingView extends EntityView {
     const tint = e.visual.tint;
     this.flag.visible = typeof tint === 'string';
     if (typeof tint === 'string') {
-      this.flag.texture = bank.flag(tint);
-      this.flag.position.set(this.sprite.x + this.bw - 6, this.sprite.y - 8);
+      const glyph = this.ctx.glyphOf?.(e) ?? null;
+      this.flag.texture = bank.flag(tint, glyph);
+      this.flag.position.set(this.sprite.x + this.bw - 6, this.sprite.y - (glyph ? 10 : 8));
     }
 
     // 상자(stack): 양수는 나무 상자, 음수(또는 범위 밖 음수)는 붉은 유령 상자
@@ -484,10 +487,11 @@ export class NpcView extends EntityView {
     this.zIndex = pos.y;
     if (moving) this.frame += dt * 7;
     const carrying = this.returning && tint !== null && GOOD.includes(tint);
-    const key = `${tint}:${Math.floor(this.frame) % 2}:${carrying}`;
+    const glyph = this.ctx.glyphOf?.(e) ?? null;
+    const key = `${tint}:${Math.floor(this.frame) % 2}:${carrying}:${glyph}`;
     if (key !== this.texKey) {
       this.texKey = key;
-      this.sprite.texture = this.ctx.bank.walker(e.sprite, tint, (Math.floor(this.frame) % 2) as 0 | 1, carrying);
+      this.sprite.texture = this.ctx.bank.walker(e.sprite, tint, (Math.floor(this.frame) % 2) as 0 | 1, carrying, glyph);
     }
     this.sprite.scale.x = this.dirSign < 0 ? -1 : 1;
     this.sprite.y = moving ? -Math.abs(Math.sin(this.frame * Math.PI)) : 0;

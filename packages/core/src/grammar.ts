@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { ExprSchema } from './expr.ts';
+import { GLYPHS } from './glyph.ts';
 
 /**
  * 시각 대응 어휘(Visual Channel Algebra).
@@ -23,9 +24,9 @@ export const CHANNEL_NAMES = Object.keys(CHANNELS) as ChannelName[];
 export const QUANT_CHANNELS = ['stack', 'crowd', 'fire', 'size', 'speed'] as const;
 
 export const PALETTE = {
-  green: { hex: '#5bbf4a', ko: '초록' },
+  green: { hex: '#358d4b', ko: '초록' },
   yellow: { hex: '#f2c94c', ko: '노랑' },
-  red: { hex: '#e5533d', ko: '빨강' },
+  red: { hex: '#e61919', ko: '빨강' },
   blue: { hex: '#4a8fe7', ko: '파랑' },
   purple: { hex: '#9b6bd6', ko: '보라' },
   orange: { hex: '#f08a3c', ko: '주황' },
@@ -56,6 +57,8 @@ export const CategoricalBindingSchema = z.object({
   field: z.string(),
   map: z.record(z.string(), ColorSchema),
   fallback: ColorSchema,
+  /** 값마다 모양(글리프): 색만으로 구분하지 않게 하는 중복 부호화(색각 이상 접근성) */
+  glyphs: z.record(z.string(), z.enum(GLYPHS)).optional(),
   readOnly: z.boolean().optional(),
 });
 

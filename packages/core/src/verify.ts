@@ -8,11 +8,15 @@ import {
   isCategorical,
   isEditableBinding,
   isQuant,
+  PALETTE,
   parseGrammar,
   type Binding,
+  type CategoricalBinding,
+  type ColorName,
   type EntityKind,
   type WorldGrammar,
 } from './grammar.ts';
+import { closestPair, MIN_DISTINGUISHABLE_DE, VISION_KO, type Vision } from './color.ts';
 import { evaluateInvariants } from './invariants.ts';
 import { applyCommands, planAffordance, project, put } from './lens.ts';
 import { findCollection, findField, type Snapshot, type SystemSchema } from './schema.ts';
@@ -59,6 +63,20 @@ export interface FidelityReport {
   accounted: number;
   visualCoverage: number;
   perKind: KindFidelity[];
+}
+
+/** 색깔 채널의 접근성: 색각 이상(적·녹·청)에서도 색이 갈리거나, 값마다 다른 모양이 있으면 통과 */
+export function tintAccessibility(b: CategoricalBinding): { ok: boolean; byColor: boolean; byGlyph: boolean; vision?: Vision; a?: ColorName; b?: ColorName; de?: number } {
+  const colors = [...new Set([...Object.values(b.map), b.fallback])];
+  let worst: { vision: Vision; a: ColorName; b: ColorName; de: number } | null = null;
+  for (const v of ['protan', 'deutan', 'tritan'] as Vision[]) {
+    const p = closestPair(colors, v);
+    if (p && (!worst || p.de < worst.de)) worst = { vision: v, ...p };
+  }
+  const byColor = !worst || worst.de >= MIN_DISTINGUISHABLE_DE;
+  const gs = Object.keys(b.map).map((v) => b.glyphs?.[v]);
+  const byGlyph = gs.length > 0 && gs.every(Boolean) && new Set(gs).size === gs.length;
+  return { ok: byColor || byGlyph, byColor, byGlyph, ...(worst ?? {}) };
 }
 
 export interface VerificationReport {
@@ -146,6 +164,14 @@ export function staticChecks(g: WorldGrammar, schema: SystemSchema): Verificatio
         if (new Set(colors).size !== colors.length) err('NON_INJECTIVE', `${k.title}: ${b.field} 의 서로 다른 값이 같은 색으로 그려집니다(구분 불가)`, ex);
         if (colors.includes(b.fallback)) err('FALLBACK_COLLISION', `${k.title}: 미지의 값(fallback ${b.fallback})이 알려진 값과 같은 색입니다`, ex);
         for (const v of f.enumValues ?? []) if (!(v in b.map)) warn('UNMAPPED_VALUE', `${k.title}: ${b.field}=${v} 는 대응 색이 없어 ${b.fallback} 로 보입니다`, ex);
+        if (b.glyphs) {
+          const gs = Object.keys(b.map).map((v) => b.glyphs![v]);
+          if (gs.some((g) => !g)) warn('GLYPH_MISSING', `${k.title}: ${b.field} 의 일부 값에 모양(글리프)이 없습니다`, ex);
+          else if (new Set(gs).size !== gs.length) err('NON_INJECTIVE', `${k.title}: ${b.field} 의 서로 다른 값이 같은 모양으로 그려집니다`, ex);
+        }
+        // 접근성 법칙: 색각 이상에서도 값이 갈리는가(색으로든 모양으로든)
+        const a11y = tintAccessibility(b);
+        if (!a11y.ok) warn('CVD_CONFUSABLE', `${k.title}: ${VISION_KO[a11y.vision!]}에서 ${b.field} 의 ${PALETTE[a11y.a!].ko}·${PALETTE[a11y.b!].ko} 이 거의 같아 보입니다(ΔE ${a11y.de!.toFixed(1)}). 값마다 모양(글리프)을 달아 주세요`, ex);
       } else if (isBoolean(b)) {
         if (!b.when && f.type !== 'boolean') err('TYPE_MISMATCH', `${k.title}: ${b.channel} 는 boolean 필드 또는 when 목록이 필요합니다(${b.field}: ${f.type})`, ex);
         if (b.when && isEditableBinding(b)) {

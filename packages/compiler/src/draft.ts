@@ -15,6 +15,7 @@ import {
   type TextBinding,
   type WorldGrammar,
 } from '@isomorph/core';
+import { assignGlyphs } from '@isomorph/core';
 import { z } from 'zod';
 import { slugify } from './lexicon.ts';
 
@@ -131,7 +132,8 @@ function toBinding(b: DraftBinding, collection: string, schema: SystemSchema): B
     case 'tint': {
       const map: Record<string, ColorName> = {};
       for (const c of b.colors ?? []) map[c.value] = c.color;
-      return { channel: 'tint', field: b.field, map, fallback: b.fallback ?? 'purple', ...ro };
+      // 모양(글리프)은 모델이 고르지 않는다: 값에서 결정적으로 정해 색만으로 구분하지 않게 한다
+      return { channel: 'tint', field: b.field, map, fallback: b.fallback ?? 'purple', glyphs: assignGlyphs(Object.keys(map)), ...ro };
     }
     case 'lit':
     case 'fog':

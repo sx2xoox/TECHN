@@ -6,6 +6,8 @@ import { channelKo, clear, describeVisual, fmtTime, h, riskKo, valueText } from 
 
 export interface TopbarHandlers {
   onLab(): void;
+  /** 색각 이상 미리보기를 다음 단계로(일반 → 적색맹 → 녹색맹 → 청색맹) */
+  onVision(): void;
   onLegend(): void;
   onFit(): void;
   onZoom(dir: number): void;
@@ -21,10 +23,12 @@ export class Topbar {
   private viol = h('button', { class: 'chip viol hidden' });
   private write = h('span', { class: 'chip write' });
   private fps = h('span', { class: 'chip fps hidden' });
+  private vision = h('button', { class: 'btn', title: '색각 이상이 있는 사람에게 세계가 어떻게 보이는지 미리보기(근사)' }, '색각: 일반');
 
   constructor(private hnd: TopbarHandlers) {
     this.verify.addEventListener('click', () => hnd.onVerification());
     this.viol.addEventListener('click', () => hnd.onNextViolation());
+    this.vision.addEventListener('click', () => hnd.onVision());
     this.el.append(
       h('div', { class: 'brand' }, h('span', { class: 'logo' }, '◆'), 'ISOMORPH'),
       this.title,
@@ -35,12 +39,18 @@ export class Topbar {
       this.write,
       this.fps,
       h('button', { class: 'btn lab', onclick: () => hnd.onLab(), title: '가설 실험실' }, '가설 실험실'),
+      this.vision,
       h('button', { class: 'btn', onclick: () => hnd.onLegend(), title: '범례' }, '범례'),
       h('button', { class: 'btn', onclick: () => hnd.onFit(), title: '전체 보기' }, '전체'),
       h('button', { class: 'btn icon', onclick: () => hnd.onZoom(1), title: '확대' }, '+'),
       h('button', { class: 'btn icon', onclick: () => hnd.onZoom(-1), title: '축소' }, '−'),
     );
     this.setConnection('connecting');
+  }
+
+  setVision(label: string, active: boolean) {
+    this.vision.textContent = `색각: ${label}`;
+    this.vision.classList.toggle('active', active);
   }
 
   setHello(m: HelloMessage) {

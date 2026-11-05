@@ -1,5 +1,5 @@
 import './style.css';
-import type { DryRunMessage, HelloMessage, InspectMessage, ServerMessage, SimulationResult, WorldState } from '@isomorph/core';
+import { VISION_KO, type DryRunMessage, type HelloMessage, type InspectMessage, type ServerMessage, type SimulationResult, type Vision, type WorldState } from '@isomorph/core';
 import { loadFonts } from './fonts.ts';
 import { Connection, wsUrl } from './net.ts';
 import { stressHello, stressWorld } from './stress.ts';
@@ -99,6 +99,12 @@ async function main() {
   }
 
   const topbar = new Topbar({
+    onVision: () => {
+      const order: Vision[] = ['normal', 'protan', 'deutan', 'tritan'];
+      const next = order[(order.indexOf(town.vision) + 1) % order.length];
+      town.setVision(next);
+      topbar.setVision(next === 'normal' ? '일반' : VISION_KO[next], next !== 'normal');
+    },
     onLab: () => {
       const open = !lab.visible;
       legend.toggle(false);
@@ -249,6 +255,7 @@ async function main() {
     if (ev.target instanceof HTMLInputElement) return;
     if (ev.key === 'Escape' && player.active) exitSim();
     if (ev.key === 'l') legend.toggle();
+    if (ev.key === 'v') topbar.el.querySelector<HTMLButtonElement>('button[title^="색각"]')?.click();
     if (ev.key === 'f') town.fit();
     if (ev.key === '+' || ev.key === '=') town.zoom(1);
     if (ev.key === '-') town.zoom(-1);

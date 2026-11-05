@@ -21,12 +21,18 @@ import {
   simulate,
   suggestHypotheses,
   learnModel,
+  assignGlyphs,
+  colorDistance,
+  deltaE2000Lab,
+  MIN_DISTINGUISHABLE_DE,
+  tintAccessibility,
   type ChangeEvent,
   type Hypothesis,
   type SystemModel,
   type WorldGrammar,
 } from '../src/index.ts';
 import { NOW, shopGrammar, shopSchema, shopSnapshot } from './fixtures.ts';
+import { compileHeuristic } from '../../compiler/src/index.ts';
 
 const clone = <T,>(x: T): T => JSON.parse(JSON.stringify(x));
 
@@ -221,6 +227,44 @@ describe('event log', () => {
     expect(d.pattern).toBe('race');
     expect(d.confidence).toBe('high');
     expect(d.detail).toContain('20ms');
+  });
+});
+
+describe('colour-blind accessibility', () => {
+  it('computes CIEDE2000 like the published reference data (Sharma, Wu & Dalal 2005)', () => {
+    const cases: [[number, number, number], [number, number, number], number][] = [
+      [[50, 2.6772, -79.7751], [50, 0, -82.7485], 2.0425],
+      [[50, 3.1571, -77.2803], [50, 0, -82.7485], 2.8615],
+      [[50, 0, 0], [50, -1, 2], 2.3669],
+      [[50, 2.5, 0], [73, 25, -18], 27.1492],
+      [[60.2574, -34.0099, 36.2677], [60.4626, -34.1751, 39.4387], 1.2644],
+      [[22.7233, 20.0904, -46.694], [23.0331, 14.973, -42.5619], 2.0373],
+    ];
+    for (const [a, b, want] of cases) expect(deltaE2000Lab(a, b)).toBeCloseTo(want, 3);
+  });
+
+  it('chooses status colours that stay apart for colour-blind viewers, and gives each value a shape', () => {
+    const b = compileHeuristic(shopSchema).kinds.find((k) => k.collection === 'orders')!.channels.find((c) => c.channel === 'tint')!;
+    if (b.channel !== 'tint' || !('map' in b)) throw new Error('no tint');
+    expect(b.glyphs).toMatchObject({ pending: 'hourglass', paid: 'check', failed: 'cross' });
+    const a = tintAccessibility(b);
+    expect(a.ok && a.byGlyph).toBe(true);
+    for (const v of ['protan', 'deutan', 'tritan'] as const) expect(colorDistance(b.map.paid, b.map.failed, v)).toBeGreaterThanOrEqual(MIN_DISTINGUISHABLE_DE);
+  });
+
+  it('warns when colours collide for colour-blind viewers and nothing else tells them apart', () => {
+    const g = structuredClone(shopGrammar);
+    const kind = g.kinds.find((k) => k.channels.some((c) => c.channel === 'tint'))!;
+    const tint = kind.channels.find((c) => c.channel === 'tint')!;
+    const confusable = (r: ReturnType<typeof verifyGrammar>) => r.issues.some((i) => i.code === 'CVD_CONFUSABLE' && i.kind === kind.id);
+    if (tint.channel !== 'tint' || !('map' in tint)) throw new Error('no tint');
+    const [v1, v2] = Object.keys(tint.map);
+    tint.map[v1] = 'teal';
+    tint.map[v2] = 'pink'; // 녹색맹에게 거의 같은 색(ΔE 0.3)
+    delete tint.glyphs;
+    expect(confusable(verifyGrammar(g, shopSchema, { numRuns: 10 }))).toBe(true);
+    tint.glyphs = assignGlyphs(Object.keys(tint.map));
+    expect(confusable(verifyGrammar(g, shopSchema, { numRuns: 10 }))).toBe(false);
   });
 });
 

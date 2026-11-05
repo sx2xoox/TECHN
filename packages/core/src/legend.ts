@@ -1,6 +1,7 @@
 import { CHANNELS, PALETTE, isBoolean, isCategorical, isQuant, type Binding, type EntityKind, type WorldGrammar } from './grammar.ts';
 import type { CollectionSchema, Row, SystemSchema } from './schema.ts';
 import { findCollection } from './schema.ts';
+import { GLYPH_SYMBOL } from './glyph.ts';
 
 /** 정직한 범례: 세계의 모든 시각 요소가 무엇을 뜻하는지 사람 말로 풀어 쓴다. */
 
@@ -24,8 +25,8 @@ export function describeBinding(b: Binding): string {
     return `${b.field} → ${name}: ${fmt(d0)}~${fmt(d1)}${unit} → ${fmt(r0)}~${fmt(r1)}`;
   }
   if (isCategorical(b)) {
-    const pairs = Object.entries(b.map).map(([k, c]) => `${k}=${PALETTE[c].ko}`);
-    return `${b.field} → ${name}: ${pairs.join(', ')} (그 외=${PALETTE[b.fallback].ko})`;
+    const pairs = Object.entries(b.map).map(([k, c]) => `${k}=${PALETTE[c].ko}${b.glyphs?.[k] ? `·${GLYPH_SYMBOL[b.glyphs[k]]}` : ''}`);
+    return `${b.field} → ${name}${b.glyphs ? '과 모양' : ''}: ${pairs.join(', ')} (그 외=${PALETTE[b.fallback].ko})`;
   }
   if (isBoolean(b)) {
     const cond = b.when ? `${b.field} ∈ {${b.when.map(String).join(', ')}}` : `${b.field} = true`;

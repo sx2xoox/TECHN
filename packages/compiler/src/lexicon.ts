@@ -1,4 +1,4 @@
-import type { ColorName, Region, SpriteKey } from '@isomorph/core';
+import { colorDistance, MIN_DISTINGUISHABLE_DE, VISIONS, type ColorName, type Region, type SpriteKey } from '@isomorph/core';
 
 /** 이름 의미론 사전: 컬렉션·필드 이름에서 세계의 은유를 고른다. */
 
@@ -120,18 +120,35 @@ const COLOR_FAMILIES: [RegExp, ColorName[]][] = [
 ];
 const NEUTRAL: ColorName[] = ['blue', 'purple', 'teal', 'pink', 'brown', 'orange', 'green', 'yellow', 'red', 'gray'];
 
-/** 값마다 서로 다른 색(단사성)을 배정하고, 남는 색 하나를 '미지의 값'용으로 남긴다. */
+/** 이미 쓴 색들과 '가장 헷갈리는 색각 유형에서' 얼마나 달라 보이는가 */
+function worstSeparation(c: ColorName, used: Iterable<ColorName>): number {
+  let worst = Infinity;
+  for (const u of used) for (const v of VISIONS) worst = Math.min(worst, colorDistance(c, u, v));
+  return worst;
+}
+
+/** 후보를 선호 순서대로 보되, 색각 이상에서도 이미 쓴 색과 구분되는 첫 색을 고른다(없으면 가장 덜 헷갈리는 색) */
+function pickColor(candidates: ColorName[], used: Set<ColorName>): ColorName {
+  const free = candidates.filter((c) => !used.has(c));
+  const ok = free.find((c) => worstSeparation(c, used) >= MIN_DISTINGUISHABLE_DE);
+  return ok ?? free.reduce((best, c) => (worstSeparation(c, used) > worstSeparation(best, used) ? c : best), free[0]);
+}
+
+/**
+ * 값마다 서로 다른 색(단사성)을 배정하고, 남는 색 하나를 '미지의 값'용으로 남긴다.
+ * 뜻에 맞는 색 계열을 먼저 보되, 적색맹·녹색맹·청색맹에서도 앞서 고른 색과 구분되는 색을 고른다.
+ */
 export function assignColors(values: string[]): { map: Record<string, ColorName>; fallback: ColorName } {
   const used = new Set<ColorName>();
   const map: Record<string, ColorName> = {};
   const limited = values.slice(0, 9);
   for (const v of limited) {
     const family = COLOR_FAMILIES.find(([re]) => re.test(v))?.[1] ?? [];
-    const pick = [...family, ...NEUTRAL].find((c) => !used.has(c))!;
+    const pick = pickColor([...new Set([...family, ...NEUTRAL])], used);
     map[v] = pick;
     used.add(pick);
   }
-  const fallback = (['purple', 'pink', 'blue', 'teal', 'brown', 'gray', 'orange'] as ColorName[]).find((c) => !used.has(c)) ?? NEUTRAL.find((c) => !used.has(c))!;
+  const fallback = pickColor([...new Set([...(['purple', 'pink', 'blue', 'teal', 'brown', 'gray', 'orange'] as ColorName[]), ...NEUTRAL])], used);
   return { map, fallback };
 }
 

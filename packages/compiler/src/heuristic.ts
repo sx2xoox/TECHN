@@ -11,6 +11,7 @@ import {
   type Region,
   type SystemSchema,
   type WorldGrammar,
+  assignGlyphs,
 } from '@isomorph/core';
 import {
   assignColors,
@@ -226,7 +227,7 @@ function planKind(c: CollectionSchema, role: Role, schema: SystemSchema, roles: 
       let consumed = false;
       if (n === tintField && take('tint')) {
         const { map, fallback } = assignColors(f.enumValues);
-        channels.push({ channel: 'tint', field: n, map, fallback, readOnly: true });
+        channels.push({ channel: 'tint', field: n, map, fallback, glyphs: assignGlyphs(Object.keys(map)), readOnly: true });
         consumed = true;
       }
       // 사전 순서(우선순위)대로 고른다: exited 가 paused 보다 '꺼짐'의 대표값으로 적합

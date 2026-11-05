@@ -193,3 +193,6 @@ ul.issues pre { margin: 2px 0 0; color: var(--muted); white-space: pre-wrap; }
 @media (min-width: 900px) {
   #lab:not(.hidden) ~ #sim-player { left: 400px; right: 8px; width: auto; transform: none; }
 }
+
+/* 색각 미리보기 켜짐 */
+#topbar .btn.active { border-color: #f2c94c; color: #ffe8a8; }

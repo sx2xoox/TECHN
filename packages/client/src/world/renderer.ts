@@ -1,5 +1,5 @@
 import { Application, ColorMatrixFilter, Container, CullerPlugin, extensions, Graphics, Rectangle, Sprite, Texture, TilingSprite, TextureStyle } from 'pixi.js';
-import { PALETTE, type ColorName, type WorldEntity, type WorldGrammar, type WorldState } from '@isomorph/core';
+import { assignGlyphs, CVD_MATRIX, isCategorical, PALETTE, type ColorName, type GlyphName, type Vision, type WorldEntity, type WorldGrammar, type WorldState } from '@isomorph/core';
 import { canvas, drawTile, type Ground } from '../pixel/sprites.ts';
 import { TextureBank } from '../pixel/textures.ts';
 import { computeLayout, pathBetween, plotFor, T, type KindCount, type Plot, type TownLayout } from './layout.ts';
@@ -101,8 +101,31 @@ export class Town {
     return this.views.size;
   }
 
+  /** 색각 이상 미리보기(근사): 세계 전체에 Machado(2009) 행렬을 씌운다 */
+  private visionFilter = new ColorMatrixFilter();
+  vision: Vision = 'normal';
+  setVision(v: Vision) {
+    this.vision = v;
+    if (v === 'normal') {
+      this.app.stage.filters = [];
+      return;
+    }
+    const m = CVD_MATRIX[v];
+    this.visionFilter.matrix = [m[0], m[1], m[2], 0, 0, m[3], m[4], m[5], 0, 0, m[6], m[7], m[8], 0, 0, 0, 0, 0, 1, 0];
+    this.app.stage.filters = [this.visionFilter];
+  }
+
   setGrammar(g: WorldGrammar) {
     this.grammar = g;
+    // 색깔 채널의 색 → 모양(글리프). 문법에 모양이 없으면(이전 판·직접 쓴 문법) 값 순서로 정한다
+    const glyphs = new Map<string, Map<string, GlyphName>>();
+    for (const k of g.kinds) {
+      const b = k.channels.find((c) => c.channel === 'tint');
+      if (!b || !isCategorical(b)) continue;
+      const byValue = b.glyphs ?? assignGlyphs(Object.keys(b.map));
+      glyphs.set(k.id, new Map(Object.entries(b.map).map(([v, color]) => [color, byValue[v]] as [string, GlyphName])));
+    }
+    this.ctx.glyphOf = (e) => (typeof e.visual.tint === 'string' ? glyphs.get(e.kind)?.get(e.visual.tint) ?? null : null);
   }
 
   private zoomAt(dir: number, sx: number, sy: number) {

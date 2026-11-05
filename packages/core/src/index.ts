@@ -13,3 +13,6 @@ export * from './legend.ts';
 export * from './protocol.ts';
 export * from './model.ts';
 export * from './simulate.ts';
+export * from './color.ts';
+export * from './glyph.ts';
+export * from './infer-refs.ts';
