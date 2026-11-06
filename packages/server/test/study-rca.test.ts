@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { analyzeStudy, makeRcaScene, planRcaTrials, RCA_KINDS, readStudyRecords, startStudyServer, studyCsv, studyTasks, type RcaKind } from '../src/index.ts';
+import { analyzeStudy, makeRcaScene, planRcaTrials, RCA_FAULTS, RCA_KINDS, rcaEngineOutcome, rcaFaultApplies, readStudyRecords, startStudyServer, studyCsv, studyTasks, type RcaFault, type RcaKind } from '../src/index.ts';
 
 /**
  * 사용자 실험의 '근본 원인 찾기' 과제: 장면이 의도한 대로 만들어지는가, 서버가 조건마다 같은 원자료를 주고
@@ -73,6 +73,52 @@ describe('root-cause scenes', () => {
   });
 });
 
+describe('root-cause engine under realistic faults (bench-rca)', () => {
+  // 고친 뒤 기대: 우연·같은 관측·느린 번짐·감시 지연(배포)은 맞음, 트레이스 없음은 멈춤, 노드 감시 지연은 덜 감 — 어떤 상황에서도 틀리지 않는다
+  const expected: Partial<Record<RcaFault, 'correct' | 'partial' | 'abstain'>> = { clean: 'correct', 'same-tick': 'correct', 'slow-spread': 'correct', coincidence: 'correct', 'no-trace': 'abstain' };
+  it('never points outside the true causal path, and gets the expected outcome per fault', async () => {
+    for (const fault of RCA_FAULTS) {
+      for (const kind of RCA_KINDS) {
+        if (!rcaFaultApplies(fault, kind)) continue;
+        for (let seed = 1; seed <= 8; seed++) {
+          const s = await makeRcaScene(kind, seed, 1_800_000_000_000, fault);
+          const o = rcaEngineOutcome(s);
+          expect(o.outcome, `${fault}/${kind}/${seed}: ${o.chain.join(' ← ')}`).not.toBe('wrong');
+          const want = fault === 'lag' ? (kind === 'bad_deploy' ? 'correct' : 'partial') : expected[fault];
+          if (want) expect(o.outcome, `${fault}/${kind}/${seed}`).toBe(want);
+        }
+      }
+    }
+  });
+
+  it('says why it climbed when time order alone cannot tell', async () => {
+    // 같은 관측: 디플로이먼트와 서비스가 함께 깨짐 → 연결의 방향(디플로이먼트가 기반)으로, 낮은 확신
+    const tie = await makeRcaScene('bad_deploy', 3, 1_800_000_000_000, 'same-tick');
+    const svc = tie.insights[tie.path[1]];
+    expect(svc.diagnosis?.title).toBe('연결된 기반이 같은 관측에서 함께 깨짐');
+    expect(svc.chain[0]).toMatchObject({ key: tie.target, via: '같은 관측에서 함께 깨진 기반(순서는 모름)' });
+    // 감시 지연: 디플로이먼트가 서비스보다 '나중에' 깨진 것처럼 보이지만, 그 전에 이미지가 바뀌었다
+    const lag = await makeRcaScene('bad_deploy', 3, 1_800_000_000_000, 'lag');
+    const lsvc = lag.insights[lag.path[1]];
+    expect(lsvc.diagnosis?.title).toBe('지금 깨진 기반이 직전에 바뀜');
+    expect(lsvc.diagnosis?.detail).toContain('image');
+    expect(lsvc.chain[0]).toMatchObject({ key: lag.target, via: '지금 깨져 있고 직전에 바뀐 기반' });
+    // 반대로, 바뀐 것이 없는 서비스 코드 오류에서는 디플로이먼트로 오르지 않는다
+    const bug = await makeRcaScene('service_bug', 3, 1_800_000_000_000, 'lag');
+    expect(bug.insights[bug.target].chain).toEqual([]);
+  });
+
+  it('does not blame a scale-up in progress, nor a crash-looping pod that broke long before its node', async () => {
+    const co = await makeRcaScene('service_bug', 5, 1_800_000_000_000, 'coincidence');
+    const dep = `k8s_deployments:shop/${co.target.split(':')[1]}`;
+    expect(co.insights[dep].violations.length).toBe(1); // 디플로이먼트는 정말 모자라다(복제본을 늘리는 중)
+    expect(co.insights[dep].diagnosis?.title).toBe('기준 값이 방금 바뀜');
+    expect(co.insights[co.target].chain.map((c) => c.key)).not.toContain(dep);
+    const slow = await makeRcaScene('node_down', 5, 1_800_000_000_000, 'slow-spread');
+    expect(slow.insights[slow.target].chain).toEqual([]); // 노드에서 그 위의 오래된 CrashLoop 파드로 거꾸로 오르지 않는다
+  });
+});
+
 describe('root-cause study server', () => {
   it('gives every condition the same rows and change log, withholds the engine from the plain table, and scores the root', async () => {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'study-rca-'));
@@ -108,6 +154,47 @@ describe('root-cause study server', () => {
       expect(recs[0]).toMatchObject({ type: 'session', task: 'rca' });
       expect(recs.filter((r) => r.type === 'trial').every((r) => (r as { task?: string }).task === 'rca')).toBe(true);
       expect(recs.at(-1)).toMatchObject({ choice: null, locateCorrect: false });
+    } finally {
+      await srv.close();
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('adds one engine-stops-early trial per condition, keeps it off the screen, and records whether the answer followed the engine', async () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'study-rca-hard-'));
+    const srv = await startStudyServer({ port: 0, staticDir: dataDir, dataDir, task: 'rca', rcaHard: true, conditions: ['world', 'table'], practicePerCondition: 1, exposeAnswers: true });
+    const base = `http://127.0.0.1:${srv.port}`;
+    const post = (p: string, body: unknown) => fetch(base + p, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    try {
+      const info = (await (await post('/api/study/session', { developer: 'some' })).json()) as { session: string; total: number };
+      expect(info.total).toBe(2 * (1 + 4));
+      type P = { key: number; condition: string; practice: boolean; insights?: Record<string, { chain: { key: string }[] }>; oracle: { target: string } };
+      const ts: P[] = [];
+      for (let k = 0; k < info.total; k++) {
+        const raw = await (await fetch(`${base}/api/study/trial?session=${info.session}&key=${k}`)).text();
+        // 엔진의 결과·상황 이름은 서버에만 둔다
+        expect(raw).not.toMatch(/"(engine|fault|hard|followedEngine)"/);
+        ts.push(JSON.parse(raw) as P);
+      }
+      const worldHard = ts.filter((t) => !t.practice && t.condition === 'world' && t.insights!['otel_services:frontend'].chain.at(-1)?.key !== t.oracle.target);
+      expect(worldHard).toHaveLength(1); // 세계 조건의 본 과제 중 엔진이 끝까지 못 가는 것은 하나
+      const h = worldHard[0];
+      const engineEnd = h.insights!['otel_services:frontend'].chain.at(-1)!.key;
+      expect(engineEnd).toMatch(/^otel_services:/);
+      expect(h.oracle.target).toMatch(/^k8s_nodes:/);
+      await post('/api/study/answer', { session: info.session, key: h.key, answer: engineEnd, choice: 'service_bug', timeMs: 5000 });
+      const rec = readStudyRecords(dataDir).find((r) => r.type === 'trial') as unknown as Record<string, unknown>;
+      expect(rec).toMatchObject({ hard: true, fault: 'lag', engineOutcome: 'partial', followedEngine: true, locateCorrect: false });
+      // 분석: 주 분석에서 빠지고 따로 보고된다
+      const recs = [
+        { type: 'session', participant: 0, session: 'a', task: 'rca', background: { developer: 'none' } },
+        { type: 'complete', participant: 0 },
+        { type: 'trial', participant: 0, session: 'a', task: 'rca', practice: false, condition: 'world', anomaly: 'node_down', locateCorrect: false, diagnoseCorrect: false, timeMs: 9000, gaveUp: false, timedOut: false, hard: true, followedEngine: true },
+        { type: 'trial', participant: 0, session: 'a', task: 'rca', practice: false, condition: 'world', anomaly: 'bad_deploy', locateCorrect: true, diagnoseCorrect: true, timeMs: 3000, gaveUp: false, timedOut: false },
+      ] as Parameters<typeof analyzeStudy>[0];
+      const r = analyzeStudy(recs, { task: 'rca' });
+      expect(r.conditions[0]).toMatchObject({ trials: 1, medianTimeMs: 3000 });
+      expect(r.hard).toEqual([{ condition: 'world', trials: 1, locateAccuracy: 0, followedEngine: 1, medianTimeMs: NaN }]);
     } finally {
       await srv.close();
       fs.rmSync(dataDir, { recursive: true, force: true });

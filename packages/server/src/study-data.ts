@@ -41,6 +41,11 @@ export interface StudyTrial {
   log?: RcaLogEntry[];
   insights?: Record<string, RcaInsight>;
   symptom?: string;
+  /** 엔진을 어렵게 만드는 상황과 그때 엔진의 결과(서버에만 — 화면에 보내지 않는다) */
+  fault?: string;
+  engine?: { outcome: string; end: string | null };
+  /** 엔진이 끝까지 못 가는 과제(주 분석에서 빼고 따로 본다) */
+  hard?: boolean;
 }
 
 function rng(seed: number) {

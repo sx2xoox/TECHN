@@ -291,7 +291,7 @@ export class Inspector {
             h('li', { class: 'here' }, h('span', { class: 'muted small' }, '여기'), ' ', e.label),
             ...steps.map((s, i) =>
               h('li', { class: i === steps.length - 1 ? 'root' : '' },
-                h('span', { class: 'via' }, s.via === 'blame' ? '↑ 오류가 시작된 곳' : s.through ? `↑ ${s.through.title} ${s.through.count}개를 거쳐, 먼저 법칙을 어김` : '↑ 먼저 법칙을 어김'),
+                h('span', { class: 'via' }, s.via === 'blame' ? '↑ 오류가 시작된 곳' : s.through ? `↑ ${s.through.title} ${s.through.count}개를 거쳐, 먼저 법칙을 어김` : s.basis === 'same-observation' ? '↑ 같은 관측에서 함께 깨진 기반(순서는 모름)' : s.basis === 'recent-change' ? '↑ 지금 깨져 있고 직전에 바뀐 기반' : '↑ 먼저 법칙을 어김'),
                 ' ',
                 s.entityId ? h('button', { class: 'link', onclick: () => this.hnd.onSelect(s.entityId!) }, s.label) : h('span', null, s.label),
                 ' ', h('span', { class: 'muted small' }, s.title),
@@ -300,6 +300,7 @@ export class Inspector {
                 h('div', { class: 'small bad' }, `⚠ ${s.violation}`),
               )),
           ),
+          h('div', { class: 'muted small' }, '사슬은 근거(트레이스·시간 순서·연결의 방향)가 있는 데까지만 오릅니다. 끝이 곧 근본 원인이라는 보장은 아닙니다.'),
         )));
     }
     // 직전 변경 되돌리기: 위반 직전에 이 개체가 받은 변경(시스템이 쓰기를 받는 값만)

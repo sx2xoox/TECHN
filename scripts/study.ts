@@ -8,6 +8,7 @@ import { startStudyServer, STUDY_CONDITIONS, STUDY_TASKS, type StudyCondition, t
  *   STUDY_CONDITIONS=world,table,table+alerts STUDY_PER_CONDITION=5 npm run study
  *   원격: HOST=0.0.0.0 STUDY_ACCESS_CODE=<참가 코드> npm run study  (외부 주소는 참가 코드 필수)
  *   근본 원인 찾기 과제: STUDY_TASK=rca STUDY_CONDITIONS=world,table,table+alerts STUDY_DATA=data/study-rca npm run study
+ *     (+ STUDY_RCA_HARD=1: 조건마다 엔진이 끝까지 못 가는 과제를 하나 더 — 엔진을 과신하는지 잰다)
  * 기록: data/study/*.jsonl   분석: npm run study:analyze
  */
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -17,6 +18,7 @@ const task = (process.env.STUDY_TASK ?? 'locate') as StudyTask;
 if (!STUDY_TASKS.includes(task)) throw new Error(`알 수 없는 과제 종류: ${task} (가능: ${STUDY_TASKS.join(', ')})`);
 const srv = await startStudyServer({
   task,
+  rcaHard: process.env.STUDY_RCA_HARD === '1',
   port: Number(process.env.PORT ?? 4100),
   host: process.env.HOST ?? '127.0.0.1',
   staticDir: path.join(root, 'packages/client/dist'),

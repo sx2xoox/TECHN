@@ -22,6 +22,11 @@ export interface TrialRecord {
   timeMs: number | null;
   gaveUp: boolean;
   timedOut: boolean;
+  /** 근본 원인 찾기: 엔진이 끝까지 못 가는 과제인가, 엔진의 결과, 참가자가 엔진이 짚은 곳을 그대로 답했는가 */
+  hard?: boolean;
+  fault?: string;
+  engineOutcome?: string | null;
+  followedEngine?: boolean | null;
 }
 export interface SessionRecord {
   type: 'session';
@@ -198,6 +203,8 @@ export interface StudyReport {
   comparisons: Comparison[];
   preference: Record<string, number>;
   warnings: string[];
+  /** 엔진이 끝까지 못 간 과제(근본 원인 찾기, 있을 때만): 조건별 정확도와 '엔진이 짚은 곳을 그대로 답한' 비율 */
+  hard?: { condition: string; trials: number; locateAccuracy: number; followedEngine: number; medianTimeMs: number }[];
 }
 
 export function analyzeStudy(records: StudyRecord[], opts: StudyFilter = {}): StudyReport {
@@ -205,7 +212,10 @@ export function analyzeStudy(records: StudyRecord[], opts: StudyFilter = {}): St
   const groupOf = new Map(sessions.map((s) => [s.participant, s.background?.developer || '응답 없음']));
   const eligible = eligibleParticipants(records, opts);
   const keep = (p: number) => eligible.has(p);
-  const trials = records.filter((r): r is TrialRecord => r.type === 'trial' && !r.practice && keep(r.participant) && taskOf(r) === (opts.task ?? 'locate'));
+  const all = records.filter((r): r is TrialRecord => r.type === 'trial' && !r.practice && keep(r.participant) && taskOf(r) === (opts.task ?? 'locate'));
+  // 엔진이 끝까지 못 가는 과제는 주 분석에서 빼고 따로 본다(사전에 정한 대로)
+  const trials = all.filter((t) => !t.hard);
+  const hardTrials = all.filter((t) => t.hard);
   const qs = records.filter((r): r is QuestionnaireRecord => r.type === 'questionnaire' && keep(r.participant));
   const participants = [...new Set(trials.map((t) => t.participant))];
   const conditions = [...new Set(trials.map((t) => t.condition))];
@@ -250,7 +260,19 @@ export function analyzeStudy(records: StudyRecord[], opts: StudyFilter = {}): St
   if (dropped > 0 && !opts.group) warnings.push(`세션 ${sessions.length}개 중 ${dropped}개는 분석에서 빠졌습니다(예비·제외·미완료).`);
   if (participants.length < 12) warnings.push(`참가자가 ${participants.length}명뿐이라 결론을 내리기에 부족합니다(사전에 정한 표본 크기까지 모으세요).`);
   for (const c of comparisons) if (c.participants < participants.length) warnings.push(`${c.a} 대 ${c.b}: 한 조건에서 정답이 하나도 없는 참가자 ${participants.length - c.participants}명은 시간 비교에서 빠졌습니다(정확도 표를 함께 보세요).`);
-  return { participants: participants.length, byGroup, conditions: summaries, comparisons, preference, warnings };
+  const hard = hardTrials.length
+    ? [...new Set(hardTrials.map((t) => t.condition))].map((c) => {
+        const ts = hardTrials.filter((t) => t.condition === c);
+        return {
+          condition: c,
+          trials: ts.length,
+          locateAccuracy: ts.filter((t) => t.locateCorrect).length / ts.length,
+          followedEngine: ts.filter((t) => t.followedEngine).length / ts.length,
+          medianTimeMs: median(ts.filter((t) => t.locateCorrect && t.timeMs !== null).map((t) => t.timeMs!)),
+        };
+      })
+    : undefined;
+  return { participants: participants.length, byGroup, conditions: summaries, comparisons, preference, warnings, ...(hard ? { hard } : {}) };
 }
 
 const KO: Record<string, string> = { world: '세계(ISOMORPH)', table: '표(대시보드)', 'table+alerts': '표 + 위반 강조' };
@@ -272,6 +294,16 @@ export function studyReportMarkdown(r: StudyReport, title = '사용자 실험 �
       '',
     );
   }
+  if (r.hard?.length) {
+    lines.push(
+      '**엔진이 끝까지 못 간 과제**(주 분석에서 뺌): 사슬이 중간 서비스에서 멈추고 참된 근본 원인은 노드인 과제입니다. "엔진이 짚은 곳을 답함" 은 그 중간 서비스를 답한 비율입니다. 표 조건은 엔진을 보지 않으므로 그 비율이 기준선입니다.',
+      '',
+      '| 조건 | 과제 | 근본 원인 정확도 | 엔진이 짚은 곳을 답함 | 중앙 시간(정답) |',
+      '|---|---|---|---|---|',
+      ...r.hard.map((h) => `| ${KO[h.condition] ?? h.condition} | ${h.trials} | ${pct(h.locateAccuracy)} | ${pct(h.followedEngine)} | ${sec(h.medianTimeMs)} |`),
+      '',
+    );
+  }
   if (Object.keys(r.preference).length) lines.push(`선호: ${Object.entries(r.preference).map(([k, v]) => `${KO[k] ?? k} ${v}`).join(', ')}`, '');
   return lines.join('\n');
 }
@@ -281,7 +313,7 @@ export function studyReportMarkdown(r: StudyReport, title = '사용자 실험 �
 export function studyCsv(records: StudyRecord[], f: StudyFilter = {}): string {
   const eligible = eligibleParticipants(records, f);
   const sessions = new Map(records.filter((r): r is SessionRecord => r.type === 'session').map((s) => [s.participant, s]));
-  const cols = ['participant', 'group', 'dashboards', 'pilot', 'order', 'task', 'condition', 'anomaly', 'locateCorrect', 'diagnoseCorrect', 'timeMs', 'gaveUp', 'timedOut'];
+  const cols = ['participant', 'group', 'dashboards', 'pilot', 'order', 'task', 'condition', 'anomaly', 'locateCorrect', 'diagnoseCorrect', 'timeMs', 'gaveUp', 'timedOut', 'hard', 'fault', 'engineOutcome', 'followedEngine'];
   const esc = (v: unknown) => {
     let s = v === null || v === undefined ? '' : String(v);
     // 스프레드시트 수식 주입 방지: =,+,-,@ 로 시작하는 글자 값은 작은따옴표로 시작하게(숫자는 그대로)
@@ -292,7 +324,7 @@ export function studyCsv(records: StudyRecord[], f: StudyFilter = {}): string {
     .filter((r): r is TrialRecord => r.type === 'trial' && !r.practice && eligible.has(r.participant) && taskOf(r) === (f.task ?? 'locate'))
     .map((t) => {
       const s = sessions.get(t.participant);
-      return [t.participant, s?.background?.developer ?? '', s?.background?.dashboards ?? '', !!s?.pilot, (s?.conditions ?? []).join('>'), taskOf(t), t.condition, t.anomaly, t.locateCorrect, t.diagnoseCorrect, t.timeMs, t.gaveUp, t.timedOut].map(esc).join(',');
+      return [t.participant, s?.background?.developer ?? '', s?.background?.dashboards ?? '', !!s?.pilot, (s?.conditions ?? []).join('>'), taskOf(t), t.condition, t.anomaly, t.locateCorrect, t.diagnoseCorrect, t.timeMs, t.gaveUp, t.timedOut, !!t.hard, t.fault ?? '', t.engineOutcome ?? '', t.followedEngine ?? ''].map(esc).join(',');
     });
   return [cols.join(','), ...rows].join('\n') + '\n';
 }

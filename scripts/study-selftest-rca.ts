@@ -12,6 +12,8 @@ import { analyzeStudy, readStudyRecords, startStudyServer, studyReportMarkdown }
  *    (사람이 쓰는 그 버튼으로). 세계에서는 frontend 건물을 캔버스 위에서 실제로 누른다.
  *  - 표: 오른쪽 변경 기록에서 근본 원인의 줄을 눌러 고른다(기록 → 표의 행 선택).
  *  - 일부러 증상(frontend)을 근본 원인으로 고른 답 1개로 채점 경로를 확인한다.
+ *  - 엔진이 끝까지 못 가는 과제(조건마다 1개)에서는 사슬의 끝이 정답이 아님을 알아채고 변경 기록에서 노드를 찾는다.
+ *    봇 1 은 그런 과제 하나에서 일부러 엔진의 답을 그대로 고른다('엔진을 따름' 기록 확인).
  *  - 봇은 조건마다 똑같이 빠르다 → 분석 수치는 의미가 없다.
  * 사용: npm run build && npm run study:selftest:rca [-- --shots dir]
  */
@@ -30,9 +32,9 @@ function assert(cond: unknown, msg: string): asserts cond {
 const playwright: any = require('playwright');
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'isomorph-study-rca-'));
 const conditions = ['world', 'table', 'table+alerts'] as const;
-const srv = await startStudyServer({ port: 0, staticDir: path.join(root, 'packages/client/dist'), dataDir, task: 'rca', conditions: [...conditions], practicePerCondition: 1, timeLimitMs: 60_000, exposeAnswers: true });
+const srv = await startStudyServer({ port: 0, staticDir: path.join(root, 'packages/client/dist'), dataDir, task: 'rca', rcaHard: true, conditions: [...conditions], practicePerCondition: 1, timeLimitMs: 60_000, exposeAnswers: true });
 const browser = await playwright.chromium.launch();
-type Trial = { key: number; condition: string; practice: boolean; index: number; symptom: string; world: { entities: { id: string; source: { collection: string; pk: unknown }; archetype: string }[] } | null; oracle: { target: string; anomaly: string } };
+type Trial = { key: number; condition: string; practice: boolean; index: number; symptom: string; insights?: Record<string, { chain: { key: string }[] }>; world: { entities: { id: string; source: { collection: string; pk: unknown }; archetype: string }[] } | null; oracle: { target: string; anomaly: string } };
 const errors: string[] = [];
 const usedChain: string[] = [];
 
@@ -54,6 +56,7 @@ try {
     await page.locator('select').first().selectOption('none');
     await page.getByRole('button', { name: '다음' }).click();
     const shot = new Set<string>();
+    let followed = false;
     for (let guard = 0; guard < 80; guard++) {
       await page.waitForFunction("window.__study?.phase && window.__study.phase !== 'background'", null, { timeout: 20_000 });
       const ph = await phase();
@@ -109,9 +112,16 @@ try {
           await page.locator('.insight-body .chain li button').last().click();
           usedChain.push(t.condition);
         }
+        // 엔진이 끝까지 못 간 과제: 사슬의 끝이 정답이 아니다
+        const engineEnd = t.insights?.[t.symptom]?.chain.at(-1)?.key ?? null;
+        let follow = false;
+        if (!wrong && t.condition !== 'table' && engineEnd && engineEnd !== target) {
+          if (p === 1 && !followed) follow = followed = true; // 일부러 엔진을 그대로 따른다
+          else await page.locator(`.log-item[data-key="${target}"]:not(.gone)`).first().click(); // 더 찾는다: 변경 기록의 노드
+        }
         await page.waitForTimeout(100);
         const picked = await page.locator('.picked').textContent();
-        const expectKey = wrong ? t.symptom : target;
+        const expectKey = wrong ? t.symptom : follow ? engineEnd! : target;
         const pk = expectKey.slice(expectKey.indexOf(':') + 1);
         if (!picked?.includes(pk)) throw new Error(`선택이 화면에 반영되지 않음: ${picked} (기대 ${expectKey}, ${t.condition})`);
         if (shotsDir && p === 0 && !t.practice && t.condition === 'table' && !shot.has('table')) {
@@ -128,17 +138,23 @@ try {
   }
 
   const records = readStudyRecords(dataDir);
-  const trials = records.filter((r) => r.type === 'trial') as unknown as { participant: number; practice: boolean; condition: string; anomaly: string; index: number; locateCorrect: boolean; diagnoseCorrect: boolean; task?: string }[];
-  assert(trials.length === 2 * 3 * 4, `과제 기록 ${trials.length}개(참가자당 조건 3 × (연습 1 + 본 과제 3))`);
+  const trials = records.filter((r) => r.type === 'trial') as unknown as { participant: number; practice: boolean; condition: string; anomaly: string; index: number; locateCorrect: boolean; diagnoseCorrect: boolean; task?: string; hard?: boolean; engineOutcome?: string; followedEngine?: boolean }[];
+  assert(trials.length === 2 * 3 * 5, `과제 기록 ${trials.length}개(참가자당 조건 3 × (연습 1 + 본 과제 3 + 엔진이 못 가는 과제 1))`);
   assert(trials.every((t) => t.task === 'rca'), '모든 기록에 과제 종류(rca)가 남음');
   const main = trials.filter((t) => !t.practice);
-  for (const c of conditions) assert(new Set(main.filter((t) => t.participant === 0 && t.condition === c).map((t) => t.anomaly)).size === 3, `참가자 0 이 ${c} 에서 원인 3종을 한 번씩 봄`);
+  for (const c of conditions) assert(new Set(main.filter((t) => t.participant === 0 && t.condition === c && !t.hard).map((t) => t.anomaly)).size === 3, `참가자 0 이 ${c} 에서 원인 3종을 한 번씩 봄`);
+  const hard = main.filter((t) => t.hard);
+  assert(hard.length === 6 && hard.every((t) => t.engineOutcome === 'partial'), '엔진이 끝까지 못 가는 과제가 참가자·조건마다 1개(엔진 결과: 덜 감)');
+  // '엔진을 따름' 은 엔진이 맞는 과제에서도 참이다(동의). 과신은 엔진이 못 간 과제에서만 잰다
+  const follow = hard.filter((t) => t.followedEngine);
+  assert(follow.length === 1 && follow[0].participant === 1 && !follow[0].locateCorrect, "엔진이 못 간 과제에서 엔진의 답을 그대로 고른 것이 '엔진을 따름' 으로 기록되고 오답으로 채점됨");
   const wrong = main.filter((t) => t.participant === 0 && t.index === 1);
   assert(wrong.length === 1 && !wrong[0].locateCorrect, '증상(frontend)을 근본 원인으로 고른 답은 오답으로 채점됨');
-  assert(main.filter((t) => !(t.participant === 0 && t.index === 1)).every((t) => t.locateCorrect && t.diagnoseCorrect), '나머지 답(사슬·변경 기록·캔버스로 고른 것)은 모두 정답으로 채점됨');
+  assert(main.filter((t) => !(t.participant === 0 && t.index === 1) && !(t.hard && t.followedEngine)).every((t) => t.locateCorrect && t.diagnoseCorrect), '나머지 답(사슬·변경 기록·캔버스로 고른 것, 엔진을 넘어 더 찾은 것)은 모두 정답으로 채점됨');
   assert(usedChain.includes('world') && usedChain.includes('table+alerts'), '세계와 표+위반 강조에서 살펴보기의 근본 원인 사슬로 골랐음');
   const report = analyzeStudy(records, { task: 'rca' });
   assert(report.participants === 2 && report.conditions.length === 3, '근본 원인 과제로 분석이 돌아감(세 조건)');
+  assert(report.hard?.length === 3 && report.conditions.every((c) => c.trials === 6), '엔진이 못 간 과제는 주 분석에서 빠지고 따로 보고됨');
   assert(analyzeStudy(records).participants === 0, '위반 찾기 분석에는 섞이지 않음');
   console.log('\n' + studyReportMarkdown(report, '하네스 자가 시험(근본 원인 찾기) — 실험 결과가 아님(봇이 조건마다 똑같이 행동)'));
   assert(errors.length === 0, `브라우저 오류 없음${errors.length ? `: ${errors.join(' | ')}` : ''}`);

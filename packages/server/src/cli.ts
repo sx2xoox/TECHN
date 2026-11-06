@@ -42,6 +42,7 @@ async function main() {
       staticDir: path.resolve(here, '../../client/dist'),
       dataDir: path.resolve(process.env.STUDY_DATA ?? 'data/study'),
       task: (process.env.STUDY_TASK || undefined) as never,
+      rcaHard: process.env.STUDY_RCA_HARD === '1',
       conditions: (process.env.STUDY_CONDITIONS ?? 'world,table').split(',') as never,
       perCondition: process.env.STUDY_PER_CONDITION ? Number(process.env.STUDY_PER_CONDITION) : undefined,
       timeLimitMs: process.env.STUDY_TIME_LIMIT_MS ? Number(process.env.STUDY_TIME_LIMIT_MS) : undefined,

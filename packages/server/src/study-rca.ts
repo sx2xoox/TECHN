@@ -52,8 +52,25 @@ export interface RcaInsight {
   related: { key: string; label: string; bad: boolean; cross: boolean }[];
 }
 
+/**
+ * 엔진을 어렵게 만드는 실제 상황(근본 원인 찾기 벤치마크·'어려운 과제' 용). clean 이 기본 장면이다.
+ *  - no-trace: 고객 화면의 호출이 트레이스로 이어지지 않는다(계측 안 된 호출) → '오류가 시작된 곳' 이 비어 있다
+ *  - same-tick: 번짐이 관측 한 번 안에 일어난다(관측 간격이 길 때) → 어느 쪽이 먼저인지 시각으로는 모른다
+ *  - slow-spread: 번짐이 느리다(재시도·시간 초과로 45초 간격)
+ *  - lag: 클러스터가 늦게 알아챈다(준비 상태 검사·노드 감시 지연) → 서비스가 먼저 실패한 것으로 보인다
+ *  - coincidence: 서비스 코드 오류 직전에, 같은 앱의 복제본을 늘리는 중이라 디플로이먼트가 잠시 모자라다(상관없는 우연)
+ *  - jitter: 번짐 간격이 장면마다 무작위(0~60초, 0이면 같은 관측). 엔진을 고칠 때 쓰지 않고 남겨 둔 확인용 상황이다
+ */
+export const RCA_FAULTS = ['clean', 'no-trace', 'same-tick', 'slow-spread', 'lag', 'coincidence', 'jitter'] as const;
+export type RcaFault = (typeof RCA_FAULTS)[number];
+/** 그 상황이 의미 있는 원인 종류만(우연은 서비스 코드 오류에만, 감시 지연은 클러스터가 끼는 경우에만) */
+export const rcaFaultApplies = (fault: RcaFault, kind: RcaKind) => (fault === 'coincidence' ? kind === 'service_bug' : fault === 'lag' ? kind !== 'service_bug' : true);
+
 export interface RcaScene {
   kind: RcaKind;
+  fault: RcaFault;
+  /** 증상(frontend)에서 근본 원인까지의 참된 경로(키 목록, 마지막이 근본 원인) */
+  path: string[];
   /** 정답: 근본 원인 행 `${collection}:${pk}` */
   target: string;
   /** 장애가 드러난 곳(과제 문구에 쓴다) */
@@ -196,7 +213,7 @@ function describeEvent(e: ChangeEvent): string {
  * 장면 하나. 같은 시드면 같은 장면이다.
  * 시간 순서(장면 시각 T 기준): 배치 작업이 먼저 깨짐(T-300초) → 상관없는 배포(T-90초) → 근본 원인(T-46초) → 번짐(6초 간격) → 지금(T)
  */
-export async function makeRcaScene(kind: RcaKind, seed: number, ts = Date.now()): Promise<RcaScene> {
+export async function makeRcaScene(kind: RcaKind, seed: number, ts = Date.now(), fault: RcaFault = 'clean'): Promise<RcaScene> {
   const r = rng(seed ^ 0x51ed27);
   const { schema, grammar } = await rcaGrammar();
   const pool = [...BACKENDS];
@@ -246,11 +263,21 @@ export async function makeRcaScene(kind: RcaKind, seed: number, ts = Date.now())
   };
   const reports = (s: State) => s.pods.find((p) => p.deployment_id === 'ops/reports')!;
 
-  push(600, (s) => (reports(s).restarts = 2));
-  push(420, (s) => (reports(s).restarts = 3));
-  push(300, (s) => (reports(s).restarts = 5)); // 상관없는 배치 작업: 가장 먼저 법칙을 어긴다(근본 원인이 아니다)
-  push(150, () => {});
-  push(90, (s) => {
+  // 확인용 상황의 번짐 간격: 0~60초(5분의 1은 0 = 같은 관측). 별도 난수라 다른 상황의 장면은 그대로다
+  function jittered() {
+    const j = rng(seed ^ 0x7177e5);
+    const gaps = [0, 1, 2].map(() => (j() < 0.2 ? 0 : 1 + Math.floor(j() * 60)));
+    const last = 20;
+    return [last + gaps[0] + gaps[1] + gaps[2], last + gaps[1] + gaps[2], last + gaps[2], last];
+  }
+  // 일정: [몇 초 전, 바꾸기]. 시각 순서대로 관측한다(같은 시각이면 한 관측)
+  const plan: [number, (s: State) => void][] = [];
+  const at = (sec: number, fn: (s: State) => void) => plan.push([sec, fn]);
+  at(600, (s) => (reports(s).restarts = 2));
+  at(420, (s) => (reports(s).restarts = 3));
+  at(300, (s) => (reports(s).restarts = 5)); // 상관없는 배치 작업: 가장 먼저 법칙을 어긴다(근본 원인이 아니다)
+  at(150, () => {});
+  at(90, (s) => {
     const d = dep(s, herring);
     const [maj, min, patch] = String(d.image).split(':')[1].split('.').map(Number);
     roll(s, herring, `registry.example/${herring}:${maj}.${min}.${patch + 1}`, true); // 상관없는 정상 배포
@@ -260,41 +287,93 @@ export async function makeRcaScene(kind: RcaKind, seed: number, ts = Date.now())
     const [maj, min] = String(d.image).split(':')[1].split('.').map(Number);
     return `registry.example/${root}:${maj}.${min + 1}.0`;
   };
+  // 번짐 단계의 시각: 기본 6초 간격, 느린 번짐은 45초 간격, 같은 관측이면 묶는다
+  const T = fault === 'slow-spread' ? [200, 155, 110, 65] : fault === 'jitter' ? jittered() : [46, 40, 34, 28];
+  const frontendOrigin = fault === 'no-trace' ? null : root;
+  const nodeDown = (s: State) => (s.nodes.find((n) => n.id === rootNode)!.ready = false);
+  const podsLost = (s: State) => {
+    for (const p of s.pods.filter((x) => x.node_id === rootNode)) Object.assign(p, { ready: false, phase: 'Unknown' });
+    recount(s);
+  };
+  const othersSlow = (s: State) => {
+    // 일부 복제본만 잃은 앱은 느려지기만 한다(실패는 아님)
+    for (const d of s.deployments.filter((x) => x.status === 'degraded' && x.name !== root)) {
+      const x = s.services.find((y) => y.id === d.name);
+      if (x) Object.assign(x, { status: 'degraded', error_count: Math.round(Number(x.calls_per_min) * 0.1), avg_latency_ms: Number(x.avg_latency_ms) * 3 });
+    }
+  };
   let target = '';
+  const svcKey = `otel_services:${root}`;
+  const depKey = `k8s_deployments:${NS}/${root}`;
+  let path: string[] = [];
   if (kind === 'bad_deploy') {
     let next = '';
-    push(46, (s) => {
+    const deploy = (s: State) => {
       next = bump(s);
       dep(s, root).image = next; // 잘못된 버전을 배포
-    });
-    push(40, (s) => roll(s, root, next, false)); // 새 파드가 뜨지 못한다 → 준비된 복제본 0
-    push(34, (s) => fail(s, root, null));
-    push(28, (s) => fail(s, 'frontend', root));
-    target = `k8s_deployments:${NS}/${root}`;
+    };
+    const rolled = (s: State) => roll(s, root, next, false); // 새 파드가 뜨지 못한다 → 준비된 복제본 0
+    at(T[0], deploy);
+    if (fault === 'same-tick') {
+      at(T[1], (s) => (rolled(s), fail(s, root, null)));
+      at(T[2], (s) => fail(s, 'frontend', frontendOrigin));
+    } else if (fault === 'lag') {
+      // 파드는 이미 오류를 내지만 준비 상태 검사가 늦게 반영된다
+      at(T[1], (s) => fail(s, root, null));
+      at(T[2], (s) => fail(s, 'frontend', frontendOrigin));
+      at(T[3], rolled);
+    } else {
+      at(T[1], rolled);
+      at(T[2], (s) => fail(s, root, null));
+      at(T[3], (s) => fail(s, 'frontend', frontendOrigin));
+    }
+    target = depKey;
+    path = ['otel_services:frontend', svcKey, depKey];
   } else if (kind === 'node_down') {
-    push(46, (s) => (s.nodes.find((n) => n.id === rootNode)!.ready = false));
-    push(40, (s) => {
-      for (const p of s.pods.filter((x) => x.node_id === rootNode)) Object.assign(p, { ready: false, phase: 'Unknown' });
-      recount(s);
-    });
-    push(34, (s) => {
-      fail(s, root, null);
-      // 일부 복제본만 잃은 앱은 느려지기만 한다(실패는 아님)
-      for (const d of s.deployments.filter((x) => x.status === 'degraded' && x.name !== root)) {
-        const x = s.services.find((y) => y.id === d.name);
-        if (x) Object.assign(x, { status: 'degraded', error_count: Math.round(Number(x.calls_per_min) * 0.1), avg_latency_ms: Number(x.avg_latency_ms) * 3 });
-      }
-    });
-    push(28, (s) => fail(s, 'frontend', root));
+    if (fault === 'same-tick') {
+      at(T[0], nodeDown);
+      at(T[1], (s) => (podsLost(s), fail(s, root, null), othersSlow(s)));
+      at(T[2], (s) => fail(s, 'frontend', frontendOrigin));
+    } else if (fault === 'lag') {
+      // 노드는 이미 죽었지만 감시가 늦게 알아챈다(그 사이 서비스는 실패)
+      at(T[1], (s) => fail(s, root, null));
+      at(T[2], (s) => fail(s, 'frontend', frontendOrigin));
+      at(T[3], nodeDown);
+      at(T[3] - 6, (s) => (podsLost(s), othersSlow(s)));
+    } else {
+      at(T[0], nodeDown);
+      at(T[1], podsLost);
+      at(T[2], (s) => (fail(s, root, null), othersSlow(s)));
+      at(T[3], (s) => fail(s, 'frontend', frontendOrigin));
+    }
     target = `k8s_nodes:${rootNode}`;
+    path = ['otel_services:frontend', svcKey, depKey, target];
   } else {
-    push(46, () => {});
-    push(40, (s) => fail(s, root, null)); // 배포·노드는 그대로인데 서비스가 실패한다(코드의 오류)
-    push(34, (s) => fail(s, 'frontend', root));
-    push(28, () => {});
-    target = `otel_services:${root}`;
+    if (fault === 'coincidence') {
+      // 상관없는 우연: 복제본을 하나 늘리는 중이고 새 파드는 아직 준비되지 않았다
+      at(T[0] + 6, (s) => {
+        const d = dep(s, root);
+        d.replicas = Number(d.replicas) + 1;
+        const n = `${root}-${Math.floor(r() * 0xffff).toString(16).padStart(4, '0')}-scale`;
+        s.pods.push({ id: `${NS}/${n}`, name: n, namespace: NS, deployment_id: d.id, node_id: NODES[0], phase: 'Pending', ready: false, restarts: 0, created_at: new Date(ts - (T[0] + 6) * 1000).toISOString() });
+        recount(s);
+      });
+    } else at(T[0], () => {});
+    if (fault === 'same-tick') {
+      at(T[1], (s) => (fail(s, root, null), fail(s, 'frontend', frontendOrigin)));
+    } else {
+      at(T[1], (s) => fail(s, root, null)); // 배포·노드는 그대로인데 서비스가 실패한다(코드의 오류)
+      at(T[2], (s) => fail(s, 'frontend', frontendOrigin));
+    }
+    at(T[3], () => {});
+    target = svcKey;
+    path = ['otel_services:frontend', svcKey];
   }
-  push(0, () => {});
+  at(0, () => {});
+  // 같은 시각의 바꾸기는 한 관측으로 합친다
+  const bySec = new Map<number, ((s: State) => void)[]>();
+  for (const [sec, fn] of plan) bySec.set(sec, [...(bySec.get(sec) ?? []), fn]);
+  for (const sec of [...bySec.keys()].sort((a, b) => b - a)) push(sec, (st) => bySec.get(sec)!.forEach((fn) => fn(st)));
 
   // 관측: 실제 묶음 어댑터로 각 시점의 스냅숏을 만들고(연결 필드 포함), 이어진 두 스냅숏의 차이를 사건으로
   let current = steps[0].state;
@@ -325,12 +404,22 @@ export async function makeRcaScene(kind: RcaKind, seed: number, ts = Date.now())
       key,
       violations: ins.violations.map((v) => v.title),
       diagnosis: ins.diagnosis && ins.diagnosis.pattern !== 'unknown' ? { title: neutral(ins.diagnosis.title), detail: neutral(ins.diagnosis.detail) } : null,
-      chain: (ins.chain ?? []).map((s) => ({ key: keyOf(s.collection, s.pk), label: s.label, violation: s.violation, via: s.via === 'blame' ? '오류가 시작된 곳' : s.through ? `${s.through.collection} ${s.through.count}개를 거쳐, 먼저 법칙을 어김` : '먼저 법칙을 어김' })),
+      chain: (ins.chain ?? []).map((s) => ({ key: keyOf(s.collection, s.pk), label: s.label, violation: s.violation, via: s.via === 'blame' ? '오류가 시작된 곳' : s.through ? `${s.through.collection} ${s.through.count}개를 거쳐, 먼저 법칙을 어김` : s.basis === 'same-observation' ? '같은 관측에서 함께 깨진 기반(순서는 모름)' : s.basis === 'recent-change' ? '지금 깨져 있고 직전에 바뀐 기반' : '먼저 법칙을 어김' })),
       change: ins.revert ? ins.revert.changes.map((x) => ({ field: x.field, from: x.to, to: x.now })) : null,
       related: (ins.related ?? []).slice(0, 8).map((x) => ({ key: keyOf(x.collection, x.pk), label: x.label, bad: x.violations.length > 0, cross: x.crossSystem })),
     };
   }
-  return { kind, target, symptom: 'otel_services:frontend', snapshot, events, log, world, insights };
+  return { kind, fault, path, target, symptom: 'otel_services:frontend', snapshot, events, log, world, insights };
+}
+
+/** 엔진의 결과: 실패한 고객 화면에서 시작한 근본 원인 사슬의 끝을 참된 경로와 견준다 */
+export type RcaEngineOutcome = 'correct' | 'partial' | 'abstain' | 'wrong';
+export function rcaEngineOutcome(s: Pick<RcaScene, 'insights' | 'symptom' | 'target' | 'path'>): { outcome: RcaEngineOutcome; end: string | null; chain: string[] } {
+  const chain = (s.insights[s.symptom]?.chain ?? []).map((c) => c.key);
+  const end = chain.at(-1) ?? null;
+  // 맞음: 끝이 근본 원인 · 덜 감: 참된 경로 위에서 멈춤 · 멈춤: 아무것도 짚지 않음 · 틀림: 경로 밖을 짚음
+  const outcome: RcaEngineOutcome = !end ? 'abstain' : end === s.target ? 'correct' : s.path.includes(end) ? 'partial' : 'wrong';
+  return { outcome, end, chain };
 }
 
 /** 과제 배정(라틴 방진): 조건마다 세 종류를 같은 수만큼, 참가자마다 순서를 돌린다 */

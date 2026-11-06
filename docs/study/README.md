@@ -56,3 +56,4 @@ npm run study:analyze -- data/study-rca --task rca --out report-rca.md --csv tri
 - 클러스터와 서비스로 장애가 번진 장면에서, 고객 화면(frontend)이 실패한 근본 원인(노드·디플로이먼트·서비스)을 찾습니다. 자세한 것은 [PROTOCOL-RCA.md](PROTOCOL-RCA.md) 에 있습니다.
 - 모든 조건이 같은 표·변경 기록을 받습니다. 엔진의 살펴보기(진단·근본 원인 사슬)는 세계와 '표 + 위반 강조' 에만 줍니다.
 - 기록 폴더는 첫 실험과 나누세요. 분석은 과제 종류를 섞지 않으며, `--task` 가 없으면 기록에 있는 종류마다 따로 보고서를 냅니다.
+- `STUDY_RCA_HARD=1` 을 더하면 조건마다 '엔진이 끝까지 못 가는' 과제를 하나 더 넣어, 사람이 엔진의 답을 그대로 믿는지(과신) 잽니다. 이 과제는 주 분석에서 빠지고 보고서에 따로 나옵니다([PROTOCOL-RCA.md](PROTOCOL-RCA.md) 7-1절).

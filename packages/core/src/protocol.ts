@@ -125,6 +125,12 @@ export interface ChainStep {
   crossSystem: boolean;
   /** 직접 이어지지 않고 사이의 행들(예: 파드)을 거쳐 이어진 경우: 그 행들의 종류와 수 */
   through?: { collection: string; title: string; count: number };
+  /**
+   * 시간 순서 말고 다른 근거로 오른 경우:
+   *  same-observation — 같은 관측에서 함께 깨졌고, 어댑터가 밝힌 연결의 방향상 그쪽이 기반
+   *  recent-change — 그쪽이 지금 깨져 있고 이 위반 직전에 바뀌었다(감시 지연으로 나중에 깨진 것처럼 보일 때)
+   */
+  basis?: 'same-observation' | 'recent-change';
 }
 
 export interface RelatedEntity {

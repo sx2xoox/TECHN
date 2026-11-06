@@ -6,7 +6,7 @@ import { buildLegend, type WorldGrammar, type SystemSchema } from '@isomorph/cor
 import { serveFile } from './server.ts';
 import { analyzeStudy, readStudyRecords, studyCsv, studyReportMarkdown, type SessionRecord, type StudyRecord } from './study-analysis.ts';
 import { makeTrial, planTrials, STUDY_ANOMALIES, STUDY_CHOICES, STUDY_RULES, studyGrammar, type StudyTrial } from './study-data.ts';
-import { makeRcaScene, planRcaTrials, RCA_CHOICES, RCA_GLOSSARY, RCA_KINDS, RCA_RULES, rcaGrammar, type RcaInsight, type RcaKind, type RcaLogEntry } from './study-rca.ts';
+import { makeRcaScene, planRcaTrials, RCA_CHOICES, RCA_GLOSSARY, RCA_KINDS, RCA_RULES, rcaEngineOutcome, rcaGrammar, type RcaFault, type RcaInsight, type RcaKind, type RcaLogEntry } from './study-rca.ts';
 
 /**
  * 사용자 실험 서버: "비개발자가 대시보드(표)보다 이 세계에서 규칙 위반을 더 빨리·정확히 찾는가"
@@ -34,6 +34,11 @@ export interface StudyOptions {
    *  - rca: 클러스터+서비스로 번진 장애에서 근본 원인 찾기(변경 기록을 모든 조건에 준다)
    */
   task?: StudyTask;
+  /**
+   * 근본 원인 찾기만: 조건마다 '엔진이 끝까지 못 가는' 과제를 하나 더 넣는다(노드 감시 지연: 사슬이 서비스에서 멈추고, 참된 원인은 노드).
+   * 사람이 엔진의 답을 그대로 믿는지(과신)를 잰다. 주 분석에서는 빼고 따로 보고한다.
+   */
+  rcaHard?: boolean;
   /** 조건마다 본 과제 수(기본: locate 5 = 위반 4종 + 없음 1, rca 3 = 원인 3종) */
   perCondition?: number;
   /** 조건마다 연습 과제 수(정답을 알려준다) */
@@ -124,9 +129,10 @@ export async function startStudyServer(opts: StudyOptions) {
     return true;
   };
 
-  async function rcaTrial(index: number, isPractice: boolean, condition: string, kind: RcaKind, seed: number): Promise<StudyTrial> {
-    const sc = await makeRcaScene(kind, seed);
-    return { index, practice: isPractice, condition, anomaly: kind, target: sc.target, seed, snapshot: sc.snapshot, world: sc.world, task: 'rca', log: sc.log, insights: sc.insights, symptom: sc.symptom };
+  async function rcaTrial(index: number, isPractice: boolean, condition: string, kind: RcaKind, seed: number, fault: RcaFault = 'clean'): Promise<StudyTrial> {
+    const sc = await makeRcaScene(kind, seed, Date.now(), fault);
+    const engine = rcaEngineOutcome(sc);
+    return { index, practice: isPractice, condition, anomaly: kind, target: sc.target, seed, snapshot: sc.snapshot, world: sc.world, task: 'rca', log: sc.log, insights: sc.insights, symptom: sc.symptom, fault, engine: { outcome: engine.outcome, end: engine.end }, ...(fault !== 'clean' ? { hard: true } : {}) };
   }
 
   async function createSession(): Promise<Session | null> {
@@ -144,7 +150,16 @@ export async function startStudyServer(opts: StudyOptions) {
         trials.push(rca ? await rcaTrial(-1, true, condition, RCA_KINDS[(p + participant) % RCA_KINDS.length], seed) : makeTrial({ index: -1, practice: true, condition, anomaly: STUDY_ANOMALIES[(p + participant) % 4], seed, grammar, schema }));
         key++;
       }
-      for (const x of plan.filter((y) => y.condition === condition)) {
+      const mine = plan.filter((y) => y.condition === condition);
+      // 엔진이 끝까지 못 가는 과제는 블록 안 자리를 참가자·조건마다 돌린다(늘 마지막이면 눈치챈다)
+      const hardAt = rca && opts.rcaHard ? (participant + conditions.indexOf(condition)) % (mine.length + 1) : -1;
+      for (let i = 0; i <= mine.length; i++) {
+        if (i === hardAt) {
+          trials.push(await rcaTrial(trials.filter((t) => !t.practice).length, false, condition, 'node_down', seedFor(participant, key), 'lag'));
+          key++;
+        }
+        if (i === mine.length) break;
+        const x = mine[i];
         const index = trials.filter((t) => !t.practice).length;
         const seed = seedFor(participant, key);
         trials.push(rca ? await rcaTrial(index, false, condition, x.anomaly as RcaKind, seed) : makeTrial({ index, practice: false, condition, anomaly: x.anomaly as (typeof STUDY_ANOMALIES)[number], seed, grammar, schema }));
@@ -233,6 +248,7 @@ export async function startStudyServer(opts: StudyOptions) {
           perCondition,
           practice,
           timeLimitMs,
+          ...(rca && opts.rcaHard ? { rcaHard: true } : {}),
           background: { developer: String(body.developer ?? '').slice(0, 20), dashboards: Math.max(0, Math.min(5, Math.round(Number(body.dashboards) || 0))), ageBand: String(body.ageBand ?? '').slice(0, 20) },
           userAgent: String(req.headers['user-agent'] ?? '').slice(0, 200),
         });
@@ -293,6 +309,8 @@ export async function startStudyServer(opts: StudyOptions) {
           firstHitMs: firstHit,
           selections: selections.length,
           wrongSelections: selections.filter((x) => x.key !== t.target).length,
+          // 근본 원인 찾기: 엔진의 결과와, 참가자가 엔진이 짚은 곳(사슬의 끝)을 그대로 답했는가
+          ...(t.task === 'rca' ? { fault: t.fault ?? 'clean', hard: !!t.hard, engineOutcome: t.engine?.outcome ?? null, followedEngine: t.engine?.end ? answer === t.engine.end : null } : {}),
           gaveUp,
           timedOut,
           viewport: typeof b.viewport === 'string' ? b.viewport.slice(0, 20) : null,

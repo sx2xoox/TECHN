@@ -33,6 +33,7 @@
     "study:selftest:rca": "tsx scripts/study-selftest-rca.ts",
     "study:power": "tsx scripts/study-power.ts",
     "e2e:stack": "tsx scripts/stack-e2e.ts",
+    "bench:rca": "tsx scripts/bench-rca.ts",
     "bench:scale": "tsx scripts/bench-scale.ts"
   },
   "engines": {

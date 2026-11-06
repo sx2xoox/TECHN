@@ -1,11 +1,12 @@
-import { diagnose, findCauses, findSharedUpstream, type Diagnosis } from './diagnose.ts';
+import { diagnose, findCauses, findSharedUpstream, violationOnset, type Diagnosis } from './diagnose.ts';
 import { findRevert } from './revert.ts';
 import type { ChangeEvent } from './diff.ts';
-import { kindById, parseEntityId, type WorldGrammar } from './grammar.ts';
+import { kindById, parseEntityId, type Invariant, type WorldGrammar } from './grammar.ts';
 import { observe } from './invariants.ts';
 import { maskRow } from './legend.ts';
 import { riskAllowed, type AffordanceOption, type ChainStep, type InspectField, type InspectMessage, type RelatedEntity, type WriteMode } from './protocol.ts';
-import { findCollection, pkOf, type Snapshot, type SystemSchema } from './schema.ts';
+import { findCollection, pkOf, type CollectionSchema, type Snapshot, type SystemSchema } from './schema.ts';
+import type { Violation } from './world.ts';
 
 /**
  * 개체 하나를 살펴보기: 원본 행(민감 필드 가림) ↔ 세계 표현, 법칙 위반, 위반 직전 사건, 원인 진단, 할 수 있는 행동.
@@ -56,7 +57,9 @@ export function buildInspect(opts: {
   const topInv = top ? grammar.invariants.find((i) => i.id === top.invariantId) : undefined;
   const causes = top ? findCauses(top, opts.events, schema, 20_000, row ?? undefined, topInv, grammar.invariants) : [];
   const up = top && row ? upstreamOf(snap, grammar, schema, world, opts.events, kind.collection, parsed.pk, row) : null;
-  const diagnosis = !top ? null : up?.via === 'blame' ? blameDiagnosis(up) : up?.through ? sharedDiagnosis(up) : diagnose(top, topInv, causes);
+  let diagnosis = !top ? null : up?.via === 'blame' ? blameDiagnosis(up) : up?.through ? sharedDiagnosis(up) : diagnose(top, topInv, causes);
+  // 사슬이 다른 근거(직전에 바뀐 기반)로 오르거나, 짧은 원인 창 밖의 연결(느린 번짐)로 오르면 진단도 그것을 말한다
+  if (diagnosis && up?.via === 'linked' && !up.through && (up.basis === 'recent-change' || diagnosis.pattern !== 'linked')) diagnosis = upDiagnosis(up);
   const chain = top && row ? chainFrom(snap, grammar, schema, world, opts.events, kind.collection, parsed.pk, row) : [];
   const revert = top && row ? findRevert(top, opts.events, schema, topInv, row) : null;
   // 위반 직전에 받은 변경이 있으면: '값을 쓰는 코드' 같은 일반론보다 그 변경을 원인 후보로 든다(더 강한 패턴은 그대로)
@@ -82,7 +85,7 @@ export function buildInspect(opts: {
 }
 
 type World = ReturnType<typeof observe>;
-type Up = ChainStep & { row: Record<string, unknown>; field: string };
+type Up = ChainStep & { row: Record<string, unknown>; field: string; change?: string };
 
 const sevRankOf = { critical: 0, warning: 1, info: 2 } as const;
 const topViolation = (world: World, collection: string, pk: string) =>
@@ -119,21 +122,96 @@ function upstreamOf(snap: Snapshot, grammar: WorldGrammar, schema: SystemSchema,
   const v = topViolation(world, collection, pk);
   if (!v) return null;
   const inv = grammar.invariants.find((i) => i.id === v.invariantId);
-  const causes = findCauses(v, events, schema, 20_000, row, inv, grammar.invariants);
-  const d = diagnose(v, inv, causes);
-  if (d.pattern === 'linked') {
-    const c = causes.filter((x) => x.relation !== 'self' && x.broke).at(-1);
-    const step = c ? stepFor(snap, grammar, schema, world, c.collection, String(c.pk), 'linked', !!c.crossSystem, '') : null;
-    if (step) return step;
+  const laws = grammar.invariants.filter((i) => i.status !== 'dismissed');
+  // 번짐은 재시도·시간 초과로 느릴 수 있다: 거슬러 오를 곳은 넓은 창에서 찾는다(지금도 법칙을 어기는 곳으로만 오르므로)
+  const causes = findCauses(v, events, schema, UPSTREAM_WINDOW_MS, row, inv, laws);
+  // 2) 연결된 곳이 먼저(또는 기반이 같은 관측에서) 법칙을 어겼으면 그곳. 늦은 것부터, 같은 관측은 마지막에
+  // 어댑터가 '이 행에 기대는 쪽' 이라고 밝힌 곳(노드에서 본 파드)으로 거꾸로 오를 때는 짧은 창만 믿는다:
+  // 넓은 창에서는 원래부터 탈이 나 있던 하위의 것(되풀이해 다시 시작하는 파드)이 '먼저 깨진 곳' 으로 끼어든다
+  const onset = violationOnset(v, events, inv);
+  const linked = causes.filter((x) => x.relation !== 'self' && x.broke && (x.direction !== 'downstream' || (onset !== undefined && onset - x.ts <= 20_000)));
+  for (const c of [...linked.filter((x) => !x.sameTick).reverse(), ...linked.filter((x) => x.sameTick)]) {
+    if (transitional(grammar, schema, world, events, c.collection, String(c.pk))) continue;
+    const step = stepFor(snap, grammar, schema, world, c.collection, String(c.pk), 'linked', !!c.crossSystem, '');
+    if (step) return c.sameTick ? { ...step, basis: 'same-observation' } : step;
   }
   // 3) 사이의 행으로만 이어진 곳: 이 행을 가리키는 행들(파드)이 함께 기대는 곳(노드)이 먼저 법칙을 어겼으면 그곳
   const transient = (c: string) => grammar.kinds.some((k) => k.collection === c && k.archetype === 'npc');
-  const shared = findSharedUpstream(v, events, schema, inv, grammar.invariants.filter((i) => i.status !== 'dismissed'), transient);
-  if (!shared) return null;
-  const step = stepFor(snap, grammar, schema, world, shared.collection, String(shared.pk), 'linked', shared.crossSystem, '');
-  if (!step) return null;
-  const through = grammar.kinds.find((k) => k.collection === shared.through.collection && k.archetype !== 'npc')?.title ?? shared.through.collection;
-  return { ...step, through: { collection: shared.through.collection, title: through, count: shared.through.count } };
+  const shared = findSharedUpstream(v, events, schema, inv, laws, transient, UPSTREAM_WINDOW_MS);
+  const sharedStep = shared && !transitional(grammar, schema, world, events, shared.collection, String(shared.pk)) ? stepFor(snap, grammar, schema, world, shared.collection, String(shared.pk), 'linked', shared.crossSystem, '') : null;
+  if (shared && sharedStep) {
+    const through = grammar.kinds.find((k) => k.collection === shared.through.collection && k.archetype !== 'npc')?.title ?? shared.through.collection;
+    return { ...sharedStep, through: { collection: shared.through.collection, title: through, count: shared.through.count } };
+  }
+  // 4) 지금 깨져 있고 이 위반 직전에 바뀐 기반: 감시가 늦게 알아채면(준비 상태 검사 지연) 기반이 '나중에' 깨진 것처럼 보인다.
+  //    순서 대신 '그 기반이 이 위반 전에 바뀌었다'(배포한 이미지 등)를 근거로 삼는다. 어댑터가 기반이라고 밝힌 연결만 본다
+  return changedUpstream(snap, grammar, schema, world, events, col, row, v, inv);
+}
+
+/** 거슬러 오를 곳을 찾는 창(원인 목록을 보여주는 창보다 넓다) */
+const UPSTREAM_WINDOW_MS = 120_000;
+
+/**
+ * '따라잡는 중' 인 위반인가: 원하는 값(복제본 수 등)이 방금 올라가서 실제 값이 아직 못 따라온 것.
+ * 이런 위반은 무엇을 빼앗지 않았으므로(준비된 수는 그대로) 다른 곳의 원인으로 삼지 않는다.
+ */
+function transitional(grammar: WorldGrammar, schema: SystemSchema, world: World, events: ChangeEvent[], collection: string, pk: string): boolean {
+  const v = topViolation(world, collection, pk);
+  if (!v) return false;
+  const inv = grammar.invariants.find((i) => i.id === v.invariantId);
+  if (inv?.expr.op !== 'cmpField') return false;
+  return diagnose(v, inv, findCauses(v, events, schema, 20_000, undefined, inv)).pattern === 'mismatch';
+}
+
+function changedUpstream(snap: Snapshot, grammar: WorldGrammar, schema: SystemSchema, world: World, events: ChangeEvent[], col: CollectionSchema, row: Record<string, unknown>, v: Violation, inv: Invariant | undefined): Up | null {
+  const onset = violationOnset(v, events, inv);
+  if (onset === undefined) return null;
+  const candidates: { collection: string; row: Record<string, unknown>; crossSystem: boolean }[] = [];
+  // 이 행이 가리키는 기반(파드 → 노드)
+  for (const f of col.fields) {
+    if (f.ref?.upstream !== 'target' || row[f.name] === null || row[f.name] === undefined) continue;
+    const r = (snap.collections[f.ref.collection] ?? []).find((x) => String(x[f.ref!.field]) === String(row[f.name]));
+    if (r) candidates.push({ collection: f.ref.collection, row: r, crossSystem: !!f.ref.crossSystem });
+  }
+  // 이 행을 가리키는 기반(디플로이먼트 → 같은 이름의 서비스)
+  for (const c of schema.collections) {
+    for (const f of c.fields) {
+      if (f.ref?.collection !== col.name || f.ref.upstream !== 'source') continue;
+      for (const r of snap.collections[c.name] ?? []) if (String(r[f.name]) === String(row[f.ref.field])) candidates.push({ collection: c.name, row: r, crossSystem: !!f.ref.crossSystem });
+    }
+  }
+  for (const c of candidates) {
+    const cc = findCollection(schema, c.collection);
+    if (!cc) continue;
+    const cpk = String(pkOf(c.row, cc));
+    const cv = topViolation(world, c.collection, cpk);
+    if (!cv || transitional(grammar, schema, world, events, c.collection, cpk)) continue;
+    const change = findRevert(cv, events, schema, grammar.invariants.find((i) => i.id === cv.invariantId), c.row);
+    if (!change || change.at >= onset || change.at < onset - UPSTREAM_WINDOW_MS) continue;
+    const step = stepFor(snap, grammar, schema, world, c.collection, cpk, 'linked', c.crossSystem, '');
+    if (step) return { ...step, basis: 'recent-change', change: change.changes.map((x) => `${x.field}: ${JSON.stringify(x.to)} → ${JSON.stringify(x.now)}`).join(', ') };
+  }
+  return null;
+}
+
+/** 시간 순서 규칙이 짧은 원인 창 밖에서 찾았거나(느린 번짐) 다른 근거로 찾은 단계의 진단 */
+function upDiagnosis(up: Up): Diagnosis {
+  if (up.basis === 'recent-change') {
+    return {
+      pattern: 'linked',
+      title: '지금 깨진 기반이 직전에 바뀜',
+      detail: `이 개체의 기반인 ${up.collection} #${up.pk} 가 지금 '${up.violation}' 를 어기고 있고, 이 위반 직전에 바뀌었습니다(${up.change}). 감시가 늦게 알아채면 기반이 나중에 깨진 것처럼 보입니다. 그 변경이 원인일 수 있습니다.`,
+      confidence: 'low',
+      suggestion: `먼저 ${up.collection} #${up.pk} 의 그 변경을 살펴보세요.`,
+    };
+  }
+  return {
+    pattern: 'linked',
+    title: up.crossSystem ? '다른 시스템의 연결된 곳이 먼저 법칙을 어김' : '연결된 곳이 먼저 법칙을 어김',
+    detail: `${up.collection} #${up.pk} 가 이 위반보다 먼저 '${up.violation}' 를 어겼고, 지금도 어기고 있습니다. 이 위반은 그 결과일 수 있습니다.`,
+    confidence: 'medium',
+    suggestion: `먼저 ${up.collection} #${up.pk} 를 살펴보세요.`,
+  };
 }
 
 function sharedDiagnosis(up: Up): Diagnosis {
@@ -166,7 +244,7 @@ function chainFrom(snap: Snapshot, grammar: WorldGrammar, schema: SystemSchema, 
     const up = upstreamOf(snap, grammar, schema, world, events, cur.collection, cur.pk, cur.row);
     if (!up || seen.has(`${up.collection}:${up.pk}`)) break;
     seen.add(`${up.collection}:${up.pk}`);
-    const { row: next, field: _f, ...step } = up;
+    const { row: next, field: _f, change: _c, ...step } = up;
     out.push(step);
     cur = { collection: up.collection, pk: String(up.pk), row: next };
   }

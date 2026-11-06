@@ -21,6 +21,10 @@ export interface CauseEvent {
   broke?: string;
   /** 다른 시스템의 행인가 */
   crossSystem?: boolean;
+  /** 이 위반과 같은 관측에서 깨졌다(순서는 시각으로 모름 — 연결의 방향상 그쪽이 기반이라 원인 후보로 둔다) */
+  sameTick?: boolean;
+  /** 어댑터가 밝힌 연결의 방향: 그 행이 이 행의 기반(upstream)인가, 이 행에 기대는 쪽(downstream)인가 */
+  direction?: 'upstream' | 'downstream';
 }
 
 export interface Diagnosis {
@@ -217,10 +221,12 @@ export function findCauses(v: Violation, events: ChangeEvent[], schema: SystemSc
   const end = onset ?? (selfEvents.length ? selfEvents.at(-1)!.ts : ix.maxTs);
   const start = end - windowMs;
   const out: CauseEvent[] = [];
-  const withBroke = (e: ChangeEvent, crossSystem: boolean) => {
-    // 같은 순간의 변화는 원인으로 돌리지 않는다(어느 쪽이 먼저인지 모름)
-    const broke = e.ts < end ? brokeBy(e) : undefined;
-    return { ...(broke ? { broke } : {}), ...(crossSystem ? { crossSystem: true } : {}) };
+  const withBroke = (e: ChangeEvent, crossSystem: boolean, upstreamSide: boolean) => {
+    // 같은 순간의 변화는 원인으로 돌리지 않는다(어느 쪽이 먼저인지 모름).
+    // 단, 그쪽이 이 행의 기반이라고 어댑터가 밝힌 연결(파드 → 디플로이먼트 → 서비스)이면 낮은 확신의 후보로 둔다
+    const tie = e.ts === end && upstreamSide;
+    const broke = e.ts < end || tie ? brokeBy(e) : undefined;
+    return { ...(broke ? { broke } : {}), ...(broke && tie ? { sameTick: true } : {}), ...(crossSystem ? { crossSystem: true } : {}) };
   };
 
   for (const e of selfEvents) {
@@ -237,7 +243,7 @@ export function findCauses(v: Violation, events: ChangeEvent[], schema: SystemSc
   }
 
   const refFields = schema.collections.flatMap((c) =>
-    c.fields.filter((f) => f.ref?.collection === v.collection).map((f) => ({ collection: c.name, field: f.name, crossSystem: !!f.ref?.crossSystem })),
+    c.fields.filter((f) => f.ref?.collection === v.collection).map((f) => ({ collection: c.name, field: f.name, crossSystem: !!f.ref?.crossSystem, upstreamSide: f.ref?.upstream === 'source', direction: f.ref?.upstream === 'source' ? ('upstream' as const) : f.ref?.upstream === 'target' ? ('downstream' as const) : undefined })),
   );
   for (const rf of refFields) {
     for (const e of ix.byCollection.get(rf.collection) ?? []) {
@@ -252,7 +258,8 @@ export function findCauses(v: Violation, events: ChangeEvent[], schema: SystemSc
         kind: e.kind,
         summary: e.kind === 'insert' ? `생성 (${brief(e.after, sens(e.collection))})` : e.kind === 'update' ? changed(e.before, e.after, sens(e.collection)) : '삭제',
         relation: 'referencing',
-        ...withBroke(e, rf.crossSystem),
+        ...withBroke(e, rf.crossSystem, rf.upstreamSide),
+        ...(rf.direction ? { direction: rf.direction } : {}),
       });
     }
   }
@@ -269,11 +276,12 @@ export function findCauses(v: Violation, events: ChangeEvent[], schema: SystemSc
             out.push({ ts: e.ts, at: e.ts, collection: e.collection, pk: e.pk, kind: 'delete', summary: `참조 대상 삭제됨 (${brief(e.before, sens(e.collection))})`, relation: 'referenced', ...(f.ref.crossSystem ? { crossSystem: true } : {}) });
             continue;
           }
-          // 가리키는 대상(다른 시스템일 수도)이 위반 직전에 자기 법칙을 어기기 시작했다면 원인 후보
-          if (e.ts < start || e.ts >= end) continue;
+          // 가리키는 대상(다른 시스템일 수도)이 위반 직전에 자기 법칙을 어기기 시작했다면 원인 후보(같은 관측이면 대상이 기반일 때만)
+          const tie = e.ts === end && f.ref.upstream === 'target';
+          if (e.ts < start || e.ts > end || (e.ts === end && !tie)) continue;
           const broke = brokeBy(e);
           if (!broke) continue;
-          out.push({ ts: e.ts, at: e.ts, collection: e.collection, pk: e.pk, kind: e.kind, summary: e.kind === 'update' ? changed(e.before, e.after, sens(e.collection)) : `생성 (${brief(e.after, sens(e.collection))})`, relation: 'referenced', broke, ...(f.ref.crossSystem ? { crossSystem: true } : {}) });
+          out.push({ ts: e.ts, at: e.ts, collection: e.collection, pk: e.pk, kind: e.kind, summary: e.kind === 'update' ? changed(e.before, e.after, sens(e.collection)) : `생성 (${brief(e.after, sens(e.collection))})`, relation: 'referenced', broke, ...(tie ? { sameTick: true } : {}), ...(f.ref.upstream ? { direction: f.ref.upstream === 'target' ? ('upstream' as const) : ('downstream' as const) } : {}), ...(f.ref.crossSystem ? { crossSystem: true } : {}) });
         }
       }
     }
@@ -297,7 +305,18 @@ export function diagnose(v: Violation, inv: Invariant | undefined, causes: Cause
     return { pattern: 'duplicate', title: '같은 값이 두 번 존재', detail: `${expr.field}=${JSON.stringify(v.values[expr.field])} 인 행이 둘 이상입니다.`, confidence: 'high', suggestion: 'UNIQUE 제약 또는 멱등 키를 추가하세요.' };
   }
   // 연결된 행(같은 시스템의 참조든, 다른 시스템이든)이 '먼저' 자기 법칙을 어겼다면: 이 위반은 그 결과일 수 있다
-  const upstream = causes.filter((c) => c.relation !== 'self' && c.broke).at(-1);
+  const linked = causes.filter((c) => c.relation !== 'self' && c.broke);
+  const upstream = linked.filter((c) => !c.sameTick).at(-1);
+  const tied = linked.find((c) => c.sameTick);
+  if (!upstream && tied) {
+    return {
+      pattern: 'linked',
+      title: '연결된 기반이 같은 관측에서 함께 깨짐',
+      detail: `${tied.collection} #${tied.pk} 가 이 위반과 같은 관측에서 '${tied.broke}' 를 어겼습니다(${tied.summary}). 시각으로는 어느 쪽이 먼저인지 모르지만, 연결의 방향상 그쪽이 이곳의 기반이라 원인일 가능성이 높습니다.`,
+      confidence: 'low',
+      suggestion: `먼저 ${tied.collection} #${tied.pk} 를 살펴보세요.`,
+    };
+  }
   if (upstream) {
     return {
       pattern: 'linked',

@@ -291,7 +291,7 @@ async function runTrial(info: SessionInfo, t: TrialPayload, town: Town, stage: H
       ins.violations.length ? h('div', { class: 'bad small' }, ...ins.violations.map((v) => h('div', null, `⚠ ${v}`))) : h('div', { class: 'ok small' }, '법칙을 지키고 있음'),
       ins.diagnosis ? h('div', { class: 'diag' }, h('strong', null, ins.diagnosis.title), h('div', { class: 'small' }, ins.diagnosis.detail)) : null,
       ins.chain.length
-        ? h('div', { class: 'chain' }, h('div', { class: 'small muted' }, '근본 원인 사슬(엔진 계산)'), h('ol', null, ins.chain.map((c) => h('li', null, link(c.key, label(c.key), true), h('div', { class: 'small muted' }, `↑ ${c.via} — ${c.violation}`)))))
+        ? h('div', { class: 'chain' }, h('div', { class: 'small muted' }, '근본 원인 사슬(엔진 계산)'), h('ol', null, ins.chain.map((c) => h('li', null, link(c.key, label(c.key), true), h('div', { class: 'small muted' }, `↑ ${c.via} — ${c.violation}`)))), h('div', { class: 'small muted' }, '사슬은 근거가 있는 데까지만 오릅니다. 끝이 곧 근본 원인이라는 보장은 아닙니다.'))
         : null,
       ins.change ? h('div', { class: 'change small' }, h('strong', null, '직전 변경: '), ins.change.map((c) => `${c.field}: ${JSON.stringify(c.from)} → ${JSON.stringify(c.to)}`).join(', ')) : null,
       ins.related.length ? h('div', { class: 'small' }, h('div', { class: 'muted' }, '연결된 곳'), h('div', { class: 'chips' }, ins.related.map((r) => link(r.key, `${r.bad ? '⚠ ' : ''}${label(r.key)}`, r.bad)))) : null,

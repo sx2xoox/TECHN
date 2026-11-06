@@ -49,7 +49,8 @@ describe('one world for the cluster and its services', () => {
     const cols = rt.schema!.collections.map((c) => c.name);
     expect(cols).toEqual(expect.arrayContaining(['k8s_nodes', 'k8s_deployments', 'k8s_pods', 'otel_services', 'otel_spans']));
     const link = rt.schema!.collections.find((c) => c.name === 'k8s_deployments')!.fields.find((f) => f.ref?.crossSystem)!;
-    expect(link.ref).toEqual({ collection: 'otel_services', field: 'id', crossSystem: true });
+    // 디플로이먼트가 같은 이름의 서비스를 돌린다: 디플로이먼트가 기반(어댑터가 밝힌 방향)
+    expect(link.ref).toEqual({ collection: 'otel_services', field: 'id', crossSystem: true, upstream: 'source' });
     const deps = Object.fromEntries(rt.lastSnapshot!.collections.k8s_deployments.map((d) => [d.id, d[link.name]]));
     expect(deps).toMatchObject({ 'default/web': 'web', 'shop/payments': 'payments', 'shop/api': null });
     // 연결이 없는 쪽에 '대상 없음' 거짓 경보가 생기지 않는다

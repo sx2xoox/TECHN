@@ -43,6 +43,8 @@ interface Link {
   /** 새로 붙는 필드 이름 */
   as: string;
   why: string;
+  /** 어느 쪽이 기반인가(어댑터가 joinUpstream 으로 밝힌 경우만) */
+  upstream?: 'target' | 'source';
 }
 
 const NAME_RE = /^[a-z][a-z0-9]{0,15}$/;
@@ -96,7 +98,7 @@ export class CompositeAdapter implements Adapter {
     for (const l of this.links) {
       const c = collections.find((x) => x.name === l.source)!;
       const pkField = collections.find((x) => x.name === l.target)!.fields.find((f) => f.name === l.targetPk)!;
-      const field: FieldSchema = { name: l.as, type: pkField.type === 'integer' ? 'integer' : 'string', nullable: true, ref: { collection: l.target, field: l.targetPk, crossSystem: true }, refEnforced: false, readOnly: true };
+      const field: FieldSchema = { name: l.as, type: pkField.type === 'integer' ? 'integer' : 'string', nullable: true, ref: { collection: l.target, field: l.targetPk, crossSystem: true, ...(l.upstream ? { upstream: l.upstream } : {}) }, refEnforced: false, readOnly: true };
       c.fields = [...c.fields, field];
     }
     this.schema = { system: this.system, source: 'custom', collections, constraints };
@@ -106,12 +108,12 @@ export class CompositeAdapter implements Adapter {
   private resolveLinks(collections: CollectionSchema[]): Link[] {
     const out: Link[] = [];
     const partOf = (c: string) => this.owner.get(c)!.part.name;
-    const add = (source: CollectionSchema, sourceField: string, target: CollectionSchema, targetField: string, why: string) => {
+    const add = (source: CollectionSchema, sourceField: string, target: CollectionSchema, targetField: string, why: string, upstream?: 'target' | 'source') => {
       if (partOf(source.name) === partOf(target.name)) return;
       if (out.some((l) => (l.source === source.name && l.target === target.name) || (l.source === target.name && l.target === source.name))) return;
       let as = `${target.name}_id`;
       while (source.fields.some((f) => f.name === as)) as = `${as}_link`;
-      out.push({ source: source.name, sourceField, target: target.name, targetField, targetPk: target.primaryKey, as, why });
+      out.push({ source: source.name, sourceField, target: target.name, targetField, targetPk: target.primaryKey, as, why, ...(upstream ? { upstream } : {}) });
     };
     const find = (spec: string) => {
       const m = /^([a-z][a-z0-9]*)\.([^.]+)\.([^.]+)$/.exec(spec);
@@ -133,7 +135,7 @@ export class CompositeAdapter implements Adapter {
           const aIsPk = a.f.name === a.c.primaryKey;
           // 방향: 기본키 쪽을 가리킨다. 둘 다 기본키거나 둘 다 아니면 시스템 순서로 한 방향만.
           const forward = bIsPk && !aIsPk ? true : aIsPk && !bIsPk ? false : partOf(a.c.name) < partOf(b.c.name);
-          if (forward) add(a.c, a.f.name, b.c, b.f.name, `같은 이름 체계(${a.f.joinKey})`);
+          if (forward) add(a.c, a.f.name, b.c, b.f.name, `같은 이름 체계(${a.f.joinKey})`, a.f.joinUpstream ? 'source' : b.f.joinUpstream ? 'target' : undefined);
         }
       }
     }

@@ -238,7 +238,7 @@ export class KubernetesAdapter implements Adapter {
           name: 'deployments',
           primaryKey: 'id',
           // 디플로이먼트 이름 = 보통 그 앱의 서비스 이름(OpenTelemetry service.name 과 같은 체계)
-          fields: [s('id'), { ...s('name'), joinKey: 'service' }, s('namespace'), { name: 'replicas', type: 'integer', nullable: false }, { name: 'ready_replicas', type: 'integer', nullable: false }, { name: 'status', type: 'string', nullable: false, enumValues: ['available', 'progressing', 'degraded'] }, { name: 'image', type: 'string', nullable: true }, { name: 'created_at', type: 'timestamp', nullable: true }],
+          fields: [s('id'), { ...s('name'), joinKey: 'service', joinUpstream: true }, s('namespace'), { name: 'replicas', type: 'integer', nullable: false }, { name: 'ready_replicas', type: 'integer', nullable: false }, { name: 'status', type: 'string', nullable: false, enumValues: ['available', 'progressing', 'degraded'] }, { name: 'image', type: 'string', nullable: true }, { name: 'created_at', type: 'timestamp', nullable: true }],
         },
         {
           name: 'pods',
@@ -247,8 +247,9 @@ export class KubernetesAdapter implements Adapter {
             s('id'),
             s('name'),
             s('namespace'),
-            { name: 'deployment_id', type: 'string', nullable: true, ref: { collection: 'deployments', field: 'id' }, refEnforced: false },
-            { name: 'node_id', type: 'string', nullable: true, ref: { collection: 'nodes', field: 'id' }, refEnforced: false },
+            // 디플로이먼트의 준비 수는 파드에서 나오고(파드가 기반), 파드는 노드 위에서 돈다(노드가 기반)
+            { name: 'deployment_id', type: 'string', nullable: true, ref: { collection: 'deployments', field: 'id', upstream: 'source' }, refEnforced: false },
+            { name: 'node_id', type: 'string', nullable: true, ref: { collection: 'nodes', field: 'id', upstream: 'target' }, refEnforced: false },
             { name: 'phase', type: 'string', nullable: false, enumValues: ['Pending', 'Running', 'Succeeded', 'Failed', 'Unknown'] },
             { name: 'ready', type: 'boolean', nullable: false },
             { name: 'restarts', type: 'integer', nullable: false },

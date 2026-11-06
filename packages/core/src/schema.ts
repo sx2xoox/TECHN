@@ -13,6 +13,11 @@ export interface FieldRef {
    * 원인 진단은 시간 순서보다 이것을 먼저 믿고 따라간다.
    */
   blame?: boolean;
+  /**
+   * 어느 쪽이 기반인가(도메인 지식): 'target' 이면 가리키는 대상이 이 행의 기반(파드 → 노드), 'source' 이면 이 행이 대상의 기반(파드 → 디플로이먼트: 디플로이먼트의 준비 수는 파드에서 나온다).
+   * 원인 추적은 시간 순서를 먼저 믿고, 같은 관측에서 함께 깨져 순서를 모를 때와 '지금 깨져 있고 직전에 바뀐 기반' 을 찾을 때만 이것을 쓴다.
+   */
+  upstream?: 'target' | 'source';
 }
 
 export interface FieldStats {
@@ -42,6 +47,8 @@ export interface FieldSchema {
    * 여러 시스템을 한 세계로 묶을 때 같은 joinKey 끼리 자동으로 연결한다.
    */
   joinKey?: string;
+  /** joinKey 로 이어진 다른 시스템의 것에 대해 이쪽이 기반인가(예: 디플로이먼트가 같은 이름의 서비스를 돌린다) */
+  joinUpstream?: boolean;
   stats?: FieldStats;
 }
 
