@@ -1,4 +1,4 @@
-import { diagnose, findCauses, type Diagnosis } from './diagnose.ts';
+import { diagnose, findCauses, findSharedUpstream, type Diagnosis } from './diagnose.ts';
 import { findRevert } from './revert.ts';
 import type { ChangeEvent } from './diff.ts';
 import { kindById, parseEntityId, type WorldGrammar } from './grammar.ts';
@@ -56,7 +56,7 @@ export function buildInspect(opts: {
   const topInv = top ? grammar.invariants.find((i) => i.id === top.invariantId) : undefined;
   const causes = top ? findCauses(top, opts.events, schema, 20_000, row ?? undefined, topInv, grammar.invariants) : [];
   const up = top && row ? upstreamOf(snap, grammar, schema, world, opts.events, kind.collection, parsed.pk, row) : null;
-  const diagnosis = !top ? null : up?.via === 'blame' ? blameDiagnosis(up) : diagnose(top, topInv, causes);
+  const diagnosis = !top ? null : up?.via === 'blame' ? blameDiagnosis(up) : up?.through ? sharedDiagnosis(up) : diagnose(top, topInv, causes);
   const chain = top && row ? chainFrom(snap, grammar, schema, world, opts.events, kind.collection, parsed.pk, row) : [];
   const revert = top && row ? findRevert(top, opts.events, schema, topInv, row) : null;
   // 위반 직전에 받은 변경이 있으면: '값을 쓰는 코드' 같은 일반론보다 그 변경을 원인 후보로 든다(더 강한 패턴은 그대로)
@@ -121,9 +121,30 @@ function upstreamOf(snap: Snapshot, grammar: WorldGrammar, schema: SystemSchema,
   const inv = grammar.invariants.find((i) => i.id === v.invariantId);
   const causes = findCauses(v, events, schema, 20_000, row, inv, grammar.invariants);
   const d = diagnose(v, inv, causes);
-  if (d.pattern !== 'linked') return null;
-  const c = causes.filter((x) => x.relation !== 'self' && x.broke).at(-1);
-  return c ? stepFor(snap, grammar, schema, world, c.collection, String(c.pk), 'linked', !!c.crossSystem, '') : null;
+  if (d.pattern === 'linked') {
+    const c = causes.filter((x) => x.relation !== 'self' && x.broke).at(-1);
+    const step = c ? stepFor(snap, grammar, schema, world, c.collection, String(c.pk), 'linked', !!c.crossSystem, '') : null;
+    if (step) return step;
+  }
+  // 3) 사이의 행으로만 이어진 곳: 이 행을 가리키는 행들(파드)이 함께 기대는 곳(노드)이 먼저 법칙을 어겼으면 그곳
+  const transient = (c: string) => grammar.kinds.some((k) => k.collection === c && k.archetype === 'npc');
+  const shared = findSharedUpstream(v, events, schema, inv, grammar.invariants.filter((i) => i.status !== 'dismissed'), transient);
+  if (!shared) return null;
+  const step = stepFor(snap, grammar, schema, world, shared.collection, String(shared.pk), 'linked', shared.crossSystem, '');
+  if (!step) return null;
+  const through = grammar.kinds.find((k) => k.collection === shared.through.collection && k.archetype !== 'npc')?.title ?? shared.through.collection;
+  return { ...step, through: { collection: shared.through.collection, title: through, count: shared.through.count } };
+}
+
+function sharedDiagnosis(up: Up): Diagnosis {
+  const t = up.through!;
+  return {
+    pattern: 'linked',
+    title: '함께 기댄 곳이 먼저 법칙을 어김',
+    detail: `이 개체와 이어진 ${t.title} ${t.count}개가 위반 직전에 함께 바뀌었고, 그것들이 기대는 ${up.collection} #${up.pk} 가 그보다 먼저 '${up.violation}' 를 어겼습니다. 이 위반은 그 결과일 수 있습니다.`,
+    confidence: 'medium',
+    suggestion: `먼저 ${up.collection} #${up.pk} 를 살펴보세요.`,
+  };
 }
 
 function blameDiagnosis(up: Up): Diagnosis {

@@ -320,7 +320,9 @@ export class IsomorphRuntime extends EventEmitter {
   }
 
   private ingest(snap: Snapshot, startedAt = 0) {
-    const events = diffSnapshots(this.lastSnapshot, snap, this.schema);
+    // 첫 관측(시작·다시 시작)은 사건으로 남기지 않는다: 모든 행이 '방금 생긴 것' 처럼 보여서
+    // 원래부터 탈이 나 있던 행이 '방금 법칙을 깨뜨린 것' 으로 원인 추적에 끼어든다. 첫 관측은 키프레임으로 남는다.
+    const events = this.lastSnapshot ? diffSnapshots(this.lastSnapshot, snap, this.schema) : [];
     this.store.record(snap, events);
     this.lastSnapshot = snap;
     this.learner.observe(snap);

@@ -13,6 +13,8 @@ export interface TrialRecord {
   participant: number;
   session: string;
   practice: boolean;
+  /** 과제 종류: 없으면 locate(위반 찾기) */
+  task?: string;
   condition: string;
   anomaly: string;
   locateCorrect: boolean;
@@ -26,6 +28,7 @@ export interface SessionRecord {
   participant: number;
   session: string;
   pilot?: boolean;
+  task?: string;
   conditions?: string[];
   ts?: number;
   background?: { developer?: string; dashboards?: number; ageBand?: string };
@@ -58,6 +61,15 @@ export interface StudyFilter {
   includePilot?: boolean;
   /** 끝까지 마친 참가자만(기본: 예) */
   completeOnly?: boolean;
+  /** 과제 종류(기본 locate). 서로 다른 과제는 한 분석에 섞지 않는다 */
+  task?: string;
+}
+
+const taskOf = (r: { task?: string }) => r.task ?? 'locate';
+
+/** 기록에 있는 과제 종류들(분석을 과제별로 나눌 때) */
+export function studyTasks(records: StudyRecord[]): string[] {
+  return [...new Set(records.filter((r): r is SessionRecord => r.type === 'session').map(taskOf))].sort();
 }
 
 /** 분석에 넣을 참가자: 예비·제외·미완료를 사전에 정한 대로 거른다 */
@@ -67,7 +79,7 @@ export function eligibleParticipants(records: StudyRecord[], f: StudyFilter = {}
   const complete = new Set(records.filter((r) => r.type === 'complete' || (r.type === 'questionnaire' && r.final)).map((r) => r.participant));
   return new Set(
     sessions
-      .filter((s) => (f.includePilot || !s.pilot) && !excluded.has(s.participant) && (f.completeOnly === false || complete.has(s.participant)) && (!f.group || (s.background?.developer || '응답 없음') === f.group))
+      .filter((s) => taskOf(s) === (f.task ?? 'locate') && (f.includePilot || !s.pilot) && !excluded.has(s.participant) && (f.completeOnly === false || complete.has(s.participant)) && (!f.group || (s.background?.developer || '응답 없음') === f.group))
       .map((s) => s.participant),
   );
 }
@@ -193,7 +205,7 @@ export function analyzeStudy(records: StudyRecord[], opts: StudyFilter = {}): St
   const groupOf = new Map(sessions.map((s) => [s.participant, s.background?.developer || '응답 없음']));
   const eligible = eligibleParticipants(records, opts);
   const keep = (p: number) => eligible.has(p);
-  const trials = records.filter((r): r is TrialRecord => r.type === 'trial' && !r.practice && keep(r.participant));
+  const trials = records.filter((r): r is TrialRecord => r.type === 'trial' && !r.practice && keep(r.participant) && taskOf(r) === (opts.task ?? 'locate'));
   const qs = records.filter((r): r is QuestionnaireRecord => r.type === 'questionnaire' && keep(r.participant));
   const participants = [...new Set(trials.map((t) => t.participant))];
   const conditions = [...new Set(trials.map((t) => t.condition))];
@@ -269,7 +281,7 @@ export function studyReportMarkdown(r: StudyReport, title = '사용자 실험 �
 export function studyCsv(records: StudyRecord[], f: StudyFilter = {}): string {
   const eligible = eligibleParticipants(records, f);
   const sessions = new Map(records.filter((r): r is SessionRecord => r.type === 'session').map((s) => [s.participant, s]));
-  const cols = ['participant', 'group', 'dashboards', 'pilot', 'order', 'condition', 'anomaly', 'locateCorrect', 'diagnoseCorrect', 'timeMs', 'gaveUp', 'timedOut'];
+  const cols = ['participant', 'group', 'dashboards', 'pilot', 'order', 'task', 'condition', 'anomaly', 'locateCorrect', 'diagnoseCorrect', 'timeMs', 'gaveUp', 'timedOut'];
   const esc = (v: unknown) => {
     let s = v === null || v === undefined ? '' : String(v);
     // 스프레드시트 수식 주입 방지: =,+,-,@ 로 시작하는 글자 값은 작은따옴표로 시작하게(숫자는 그대로)
@@ -277,10 +289,10 @@ export function studyCsv(records: StudyRecord[], f: StudyFilter = {}): string {
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   const rows = records
-    .filter((r): r is TrialRecord => r.type === 'trial' && !r.practice && eligible.has(r.participant))
+    .filter((r): r is TrialRecord => r.type === 'trial' && !r.practice && eligible.has(r.participant) && taskOf(r) === (f.task ?? 'locate'))
     .map((t) => {
       const s = sessions.get(t.participant);
-      return [t.participant, s?.background?.developer ?? '', s?.background?.dashboards ?? '', !!s?.pilot, (s?.conditions ?? []).join('>'), t.condition, t.anomaly, t.locateCorrect, t.diagnoseCorrect, t.timeMs, t.gaveUp, t.timedOut].map(esc).join(',');
+      return [t.participant, s?.background?.developer ?? '', s?.background?.dashboards ?? '', !!s?.pilot, (s?.conditions ?? []).join('>'), taskOf(t), t.condition, t.anomaly, t.locateCorrect, t.diagnoseCorrect, t.timeMs, t.gaveUp, t.timedOut].map(esc).join(',');
     });
   return [cols.join(','), ...rows].join('\n') + '\n';
 }

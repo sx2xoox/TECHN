@@ -38,3 +38,24 @@ table.grid tbody tr.alert { background: #5a2420; }
 table.grid tbody tr.alert.sel { background: #6b2a5a; }
 .field input[type=text] { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); padding: 6px; font-family: inherit; font-size: 13px; }
 .pilot-tag { position: fixed; right: 10px; bottom: 10px; background: #5a4520; border: 1px solid var(--warn); color: #ffe8a8; padding: 4px 10px; z-index: 50; font-size: 11px; }
+/* 근본 원인 찾기: 오른쪽에 살펴보기 + 변경 기록 */
+.study-body.rca { grid-template-columns: 290px 1fr 360px; }
+.study-extra { background: var(--panel); border-left: 2px solid var(--line); display: flex; flex-direction: column; min-height: 0; line-height: 1.5; }
+.study-extra h3 { margin: 0 0 6px; }
+.study-extra .insight { padding: 8px 12px; border-bottom: 2px solid var(--line); max-height: 55%; overflow-y: auto; flex: 0 0 auto; }
+.study-extra .log { padding: 8px 12px; overflow-y: auto; min-height: 0; flex: 1 1 auto; }
+.insight-body { display: grid; gap: 6px; }
+.insight-body .diag { background: var(--panel-2); border: 1px solid var(--line); padding: 4px 8px; }
+.insight-body .chain ol { margin: 2px 0 0; padding-left: 18px; }
+.insight-body .change { background: #2d2a1f; border: 1px solid #6b5d2c; padding: 4px 8px; }
+.insight-body .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
+.linkish { background: none; border: 1px solid var(--line); color: var(--text); padding: 1px 6px; cursor: pointer; font: inherit; text-align: left; }
+.linkish:hover { background: #3a3346; }
+.linkish.bad { border-color: #8a3a32; }
+.log-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.log-item { padding: 3px 6px; border: 1px solid transparent; cursor: pointer; word-break: break-all; }
+.log-item:hover { background: #3a3346; border-color: var(--line); }
+.log-item.gone { cursor: default; opacity: 0.6; }
+.log-item.gone:hover { background: none; border-color: transparent; }
+.glossary ul { margin: 6px 0 0; padding-left: 18px; }
+@media (max-width: 1100px) { .study-body.rca { grid-template-columns: 250px 1fr 300px; } }

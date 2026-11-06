@@ -11,6 +11,7 @@
 | [RECRUITMENT.md](RECRUITMENT.md) | 모집 공고와 선별 질문 | 모집할 때 |
 | [CONSENT.md](CONSENT.md) | 인쇄용 설명문·동의서(화면의 동의와 같은 내용) | 참가자를 만날 때 |
 | [CHECKLIST.md](CHECKLIST.md) | 회차마다 쓰는 점검표(전·중·후) | 매 회차 |
+| [PROTOCOL-RCA.md](PROTOCOL-RCA.md) | 두 번째 실험: 여러 시스템에 번진 장애의 근본 원인 찾기(계획서 + 사전 등록 요약) | 따로 등록하고 따로 진행 |
 
 ## 빠른 시작
 
@@ -41,3 +42,17 @@ npm run study
 - **조건 순서 균형**: 참가 번호가 짝수면 세계를 먼저, 홀수면 표를 먼저 봅니다. 철회한 번호는 다시 쓰지 않습니다.
 - **분석 대상 거르기**: 예비·제외·미완료 참가자는 기본으로 분석에서 뺍니다.
 - **철회**: 진행자 화면에서 그 참가자의 기록만 지웁니다. 감사 기록에는 번호와 시각만 남습니다.
+
+## 두 번째 실험: 근본 원인 찾기
+
+```bash
+STUDY_TASK=rca STUDY_CONDITIONS=world,table,table+alerts STUDY_DATA=data/study-rca npm run study
+```
+
+```bash
+npm run study:analyze -- data/study-rca --task rca --out report-rca.md --csv trials-rca.csv
+```
+
+- 클러스터와 서비스로 장애가 번진 장면에서, 고객 화면(frontend)이 실패한 근본 원인(노드·디플로이먼트·서비스)을 찾습니다. 자세한 것은 [PROTOCOL-RCA.md](PROTOCOL-RCA.md) 에 있습니다.
+- 모든 조건이 같은 표·변경 기록을 받습니다. 엔진의 살펴보기(진단·근본 원인 사슬)는 세계와 '표 + 위반 강조' 에만 줍니다.
+- 기록 폴더는 첫 실험과 나누세요. 분석은 과제 종류를 섞지 않으며, `--task` 가 없으면 기록에 있는 종류마다 따로 보고서를 냅니다.

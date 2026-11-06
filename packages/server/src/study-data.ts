@@ -1,5 +1,6 @@
 import { attachStats, markSensitive, observe, type Row, type Snapshot, type SystemSchema, type WorldGrammar, type WorldState } from '@isomorph/core';
 import { compileHeuristic } from '@isomorph/compiler';
+import type { RcaInsight, RcaLogEntry } from './study-rca.ts';
 
 /**
  * 사용자 실험용 과제 생성기.
@@ -28,12 +29,18 @@ export interface StudyTrial {
   index: number;
   practice: boolean;
   condition: string;
-  anomaly: StudyAnomaly;
+  /** 위반 찾기: 심은 위반 종류(StudyAnomaly), 근본 원인 찾기: 원인 종류(RcaKind) */
+  anomaly: string;
   /** 정답 행: `${collection}:${pk}` (어긴 곳이 없으면 null) */
   target: string | null;
   seed: number;
   snapshot: Snapshot;
   world: WorldState;
+  /** 근본 원인 찾기 과제만: 변경 기록(모든 조건), 엔진이 계산한 살펴보기(세계·표+위반 강조), 장애가 드러난 곳 */
+  task?: 'rca';
+  log?: RcaLogEntry[];
+  insights?: Record<string, RcaInsight>;
+  symptom?: string;
 }
 
 function rng(seed: number) {

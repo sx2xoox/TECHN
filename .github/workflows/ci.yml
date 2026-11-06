@@ -121,6 +121,8 @@ jobs:
         run: npm run e2e:stack -- --shots e2e-screenshots
       - name: user-study kit self-test (bots, not data)
         run: npm run study:selftest -- --shots e2e-screenshots
+      - name: root-cause study task self-test (bots, not data)
+        run: npm run study:selftest:rca -- --shots e2e-screenshots
       - uses: actions/upload-artifact@v4
         if: always()
         with:

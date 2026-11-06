@@ -291,7 +291,7 @@ export class Inspector {
             h('li', { class: 'here' }, h('span', { class: 'muted small' }, '여기'), ' ', e.label),
             ...steps.map((s, i) =>
               h('li', { class: i === steps.length - 1 ? 'root' : '' },
-                h('span', { class: 'via' }, s.via === 'blame' ? '↑ 오류가 시작된 곳' : '↑ 먼저 법칙을 어김'),
+                h('span', { class: 'via' }, s.via === 'blame' ? '↑ 오류가 시작된 곳' : s.through ? `↑ ${s.through.title} ${s.through.count}개를 거쳐, 먼저 법칙을 어김` : '↑ 먼저 법칙을 어김'),
                 ' ',
                 s.entityId ? h('button', { class: 'link', onclick: () => this.hnd.onSelect(s.entityId!) }, s.label) : h('span', null, s.label),
                 ' ', h('span', { class: 'muted small' }, s.title),

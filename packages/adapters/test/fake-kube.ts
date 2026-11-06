@@ -22,6 +22,10 @@ export interface FakeKube {
   imageOf(id: string): string;
   goodImage: string;
   podsOf(id: string): number;
+  /** 노드의 Ready 상태를 바꾼다 */
+  setNodeReady(name: string, ready: boolean): void;
+  /** 노드가 멈춘 뒤의 컨트롤러 흉내: 그 노드 위의 파드가 준비를 잃고(Unknown) 디플로이먼트의 준비 수가 준다. 되살리면 반대로 */
+  podsOnNode(name: string, ready: boolean): void;
   close(): Promise<void>;
 }
 
@@ -104,6 +108,7 @@ export async function startFakeKube(): Promise<FakeKube> {
   };
 
   const patches: FakeKube['patches'] = [];
+  const downed = new Set<Obj>();
   const server = http.createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://x');
     const send = (status: number, body: unknown) => res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify(body));
@@ -174,6 +179,29 @@ export async function startFakeKube(): Promise<FakeKube> {
       notify('deployments', 'ADDED', find(`${ns}/${name}`));
     },
     goodImage: GOOD_IMAGE,
+    setNodeReady: (name, ready) => {
+      const n = nodes.find((x) => x.metadata.name === name)!;
+      n.status.conditions = [{ type: 'Ready', status: ready ? 'True' : 'Unknown' }];
+      n.metadata.resourceVersion = nextRv();
+      notify('nodes', 'MODIFIED', n);
+    },
+    podsOnNode: (name, ready) => {
+      // 되살릴 때는 노드 때문에 준비를 잃었던 파드만(원래 탈이 나 있던 파드는 그대로)
+      for (const p of pods.filter((x) => x.spec.nodeName === name && (ready ? downed.has(x) : x.status.containerStatuses[0].ready))) {
+        if (ready) downed.delete(p);
+        else downed.add(p);
+        p.status.containerStatuses[0].ready = ready;
+        p.status.phase = ready ? 'Running' : 'Unknown';
+        p.metadata.resourceVersion = nextRv();
+        notify('pods', 'MODIFIED', p);
+      }
+      for (const d of deployments) {
+        const mine = pods.filter((p) => p.metadata.namespace === d.metadata.namespace && p.metadata.ownerReferences[0].name.startsWith(`${d.metadata.name}-`));
+        d.status.readyReplicas = mine.filter((p) => p.status.containerStatuses[0].ready).length;
+        d.metadata.resourceVersion = nextRv();
+        notify('deployments', 'MODIFIED', d);
+      }
+    },
     imageOf: (id) => find(id).spec.template.spec.containers[0].image,
     deployImage: (id, image) => {
       const d = find(id);

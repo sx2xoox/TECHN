@@ -5,7 +5,8 @@ import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { buildLegend, type WorldGrammar, type SystemSchema } from '@isomorph/core';
 import { serveFile } from './server.ts';
 import { analyzeStudy, readStudyRecords, studyCsv, studyReportMarkdown, type SessionRecord, type StudyRecord } from './study-analysis.ts';
-import { makeTrial, planTrials, STUDY_ANOMALIES, STUDY_CHOICES, STUDY_RULES, studyGrammar, type StudyAnomaly, type StudyTrial } from './study-data.ts';
+import { makeTrial, planTrials, STUDY_ANOMALIES, STUDY_CHOICES, STUDY_RULES, studyGrammar, type StudyTrial } from './study-data.ts';
+import { makeRcaScene, planRcaTrials, RCA_CHOICES, RCA_GLOSSARY, RCA_KINDS, RCA_RULES, rcaGrammar, type RcaInsight, type RcaKind, type RcaLogEntry } from './study-rca.ts';
 
 /**
  * 사용자 실험 서버: "비개발자가 대시보드(표)보다 이 세계에서 규칙 위반을 더 빨리·정확히 찾는가"
@@ -16,6 +17,8 @@ import { makeTrial, planTrials, STUDY_ANOMALIES, STUDY_CHOICES, STUDY_RULES, stu
  */
 
 export type StudyCondition = 'world' | 'table' | 'table+alerts';
+export type StudyTask = 'locate' | 'rca';
+export const STUDY_TASKS: StudyTask[] = ['locate', 'rca'];
 export const STUDY_CONDITIONS: StudyCondition[] = ['world', 'table', 'table+alerts'];
 
 export interface StudyOptions {
@@ -25,7 +28,13 @@ export interface StudyOptions {
   staticDir: string;
   dataDir: string;
   conditions?: StudyCondition[];
-  /** 조건마다 본 과제 수(기본 5 = 위반 4종 + 없음 1) */
+  /**
+   * 과제 종류(서버 하나에 한 종류):
+   *  - locate(기본): 쇼핑몰 데이터에서 규칙을 어긴 곳 찾기
+   *  - rca: 클러스터+서비스로 번진 장애에서 근본 원인 찾기(변경 기록을 모든 조건에 준다)
+   */
+  task?: StudyTask;
+  /** 조건마다 본 과제 수(기본: locate 5 = 위반 4종 + 없음 1, rca 3 = 원인 3종) */
   perCondition?: number;
   /** 조건마다 연습 과제 수(정답을 알려준다) */
   practicePerCondition?: number;
@@ -65,7 +74,13 @@ export interface TrialPayload {
   world: StudyTrial['world'] | null;
   /** table+alerts 조건에서만: 규칙을 어긴 행 */
   alerts?: string[];
-  oracle?: { target: string | null; anomaly: StudyAnomaly };
+  oracle?: { target: string | null; anomaly: string };
+  /** 근본 원인 찾기만 */
+  task?: 'rca';
+  log?: RcaLogEntry[];
+  /** 세계와 표+위반 강조 조건만: 엔진이 계산한 살펴보기(진단·근본 원인 사슬·직전 변경) */
+  insights?: Record<string, RcaInsight>;
+  symptom?: string;
 }
 
 function seedFor(participant: number, key: number) {
@@ -77,14 +92,17 @@ function seedFor(participant: number, key: number) {
 export async function startStudyServer(opts: StudyOptions) {
   const log = opts.log ?? (() => {});
   const conditions = opts.conditions ?? ['world', 'table'];
-  const perCondition = opts.perCondition ?? 5;
+  const task: StudyTask = opts.task ?? 'locate';
+  if (!STUDY_TASKS.includes(task)) throw new Error(`알 수 없는 과제 종류: ${task} (가능: ${STUDY_TASKS.join(', ')})`);
+  const rca = task === 'rca';
+  const perCondition = opts.perCondition ?? (rca ? 3 : 5);
   const practice = opts.practicePerCondition ?? 1;
-  const timeLimitMs = opts.timeLimitMs ?? 120_000;
+  const timeLimitMs = opts.timeLimitMs ?? (rca ? 180_000 : 120_000);
   fs.mkdirSync(opts.dataDir, { recursive: true });
   const loopback = ['127.0.0.1', 'localhost', '::1', undefined].includes(opts.host);
   if (!loopback && !opts.accessCode) throw new Error(`외부 주소(${opts.host})로 실험을 열려면 참가 코드(accessCode / STUDY_ACCESS_CODE)가 필요합니다.`);
   const adminToken = opts.adminToken ?? randomBytes(12).toString('hex');
-  const { schema, grammar } = studyGrammar();
+  const { schema, grammar } = rca ? await rcaGrammar() : studyGrammar();
   const sessions = new Map<string, Session>();
 
   // 참가 번호는 지운(철회한) 참가자가 있어도 다시 쓰지 않는다(순서 균형과 기록이 섞이지 않게)
@@ -106,25 +124,32 @@ export async function startStudyServer(opts: StudyOptions) {
     return true;
   };
 
-  function createSession(): Session | null {
+  async function rcaTrial(index: number, isPractice: boolean, condition: string, kind: RcaKind, seed: number): Promise<StudyTrial> {
+    const sc = await makeRcaScene(kind, seed);
+    return { index, practice: isPractice, condition, anomaly: kind, target: sc.target, seed, snapshot: sc.snapshot, world: sc.world, task: 'rca', log: sc.log, insights: sc.insights, symptom: sc.symptom };
+  }
+
+  async function createSession(): Promise<Session | null> {
     const now = Date.now();
     for (const [sid, x] of sessions) if (now - x.createdAt > SESSION_TTL_MS) sessions.delete(sid);
     if (sessions.size >= MAX_LIVE_SESSIONS) return null;
     const id = randomUUID();
     const participant = nextParticipant();
     const trials: StudyTrial[] = [];
-    const plan = planTrials(participant, conditions, perCondition);
+    const plan = rca ? planRcaTrials(participant, conditions, perCondition) : planTrials(participant, conditions, perCondition);
     let key = 0;
     for (const condition of conditions.map((_, i) => conditions[(i + participant) % conditions.length])) {
       for (let p = 0; p < practice; p++) {
-        const anomaly = STUDY_ANOMALIES[(p + participant) % 4];
-        trials.push(makeTrial({ index: -1, practice: true, condition, anomaly, seed: seedFor(participant, 1000 + key), grammar, schema }));
+        const seed = seedFor(participant, 1000 + key);
+        trials.push(rca ? await rcaTrial(-1, true, condition, RCA_KINDS[(p + participant) % RCA_KINDS.length], seed) : makeTrial({ index: -1, practice: true, condition, anomaly: STUDY_ANOMALIES[(p + participant) % 4], seed, grammar, schema }));
         key++;
       }
-      plan.filter((x) => x.condition === condition).forEach((x) => {
-        trials.push(makeTrial({ index: trials.filter((t) => !t.practice).length, practice: false, condition, anomaly: x.anomaly, seed: seedFor(participant, key), grammar, schema }));
+      for (const x of plan.filter((y) => y.condition === condition)) {
+        const index = trials.filter((t) => !t.practice).length;
+        const seed = seedFor(participant, key);
+        trials.push(rca ? await rcaTrial(index, false, condition, x.anomaly as RcaKind, seed) : makeTrial({ index, practice: false, condition, anomaly: x.anomaly as (typeof STUDY_ANOMALIES)[number], seed, grammar, schema }));
         key++;
-      });
+      }
     }
     const s: Session = { id, participant, createdAt: Date.now(), trials, answered: new Set(), surveyed: new Set(), file: path.join(opts.dataDir, `${new Date().toISOString().slice(0, 10)}-p${String(participant).padStart(3, '0')}-${id.slice(0, 8)}.jsonl`) };
     sessions.set(id, s);
@@ -142,12 +167,14 @@ export async function startStudyServer(opts: StudyOptions) {
       total: s.trials.length,
       practice: t.practice,
       condition,
-      rows: t.snapshot.collections,
+      rows: t.task === 'rca' ? Object.fromEntries(Object.entries(t.snapshot.collections).filter(([, rows]) => rows.length)) : t.snapshot.collections,
       // 세계 조건만 세계를 받는다. 위반 목록(정답이 적힌 것)은 빼고, 그림에 필요한 개체별 이상 현상만 남긴다.
       // (세계 조건은 그 이상 현상을 '그려 보여주는 것' 자체가 실험 처치다. 표 조건에는 세계를 보내지 않는다.)
       world: condition === 'world' ? { ...t.world, violations: [] } : null,
       ...(condition === 'table+alerts' ? { alerts: [...new Set(t.world.violations.map((v) => `${v.collection}:${v.pk}`))] } : {}),
       ...(opts.exposeAnswers ? { oracle: { target: t.target, anomaly: t.anomaly } } : {}),
+      // 근본 원인 찾기: 변경 기록은 모든 조건에(같은 원자료), 엔진이 계산한 살펴보기는 표 조건에만 주지 않는다
+      ...(t.task === 'rca' ? { task: 'rca' as const, log: t.log, symptom: t.symptom, ...(condition !== 'table' ? { insights: t.insights } : {}) } : {}),
     };
   };
 
@@ -187,7 +214,7 @@ export async function startStudyServer(opts: StudyOptions) {
     const url = new URL(req.url ?? '/', 'http://localhost');
     try {
       if (req.method === 'GET' && url.pathname === '/api/study/config') {
-        return json(res, 200, { requiresCode: !!opts.accessCode });
+        return json(res, 200, { requiresCode: !!opts.accessCode, task });
       }
       if (url.pathname.startsWith('/api/study/admin/') || url.pathname === '/study/admin') {
         if (!isAdmin(req, url)) return json(res, 403, { error: '진행자 토큰이 필요합니다' });
@@ -196,11 +223,12 @@ export async function startStudyServer(opts: StudyOptions) {
       if (req.method === 'POST' && url.pathname === '/api/study/session') {
         const body = await readBody(req);
         if (opts.accessCode && !sameSecret(String(body.code ?? ''), opts.accessCode)) return json(res, 403, { error: '참가 코드가 맞지 않습니다' });
-        const s = createSession();
+        const s = await createSession();
         if (!s) return json(res, 503, { error: '진행 중인 참가자가 너무 많습니다. 잠시 뒤 다시 시도하세요.' });
         record(s, {
           type: 'session',
           pilot: !!body.pilot,
+          task,
           conditions: s.trials.filter((t, i, a) => a.findIndex((x) => x.condition === t.condition) === i).map((t) => t.condition),
           perCondition,
           practice,
@@ -214,8 +242,10 @@ export async function startStudyServer(opts: StudyOptions) {
           participant: s.participant,
           total: s.trials.length,
           timeLimitMs,
-          rules: STUDY_RULES,
-          choices: STUDY_CHOICES,
+          task,
+          rules: rca ? RCA_RULES : STUDY_RULES,
+          choices: rca ? RCA_CHOICES : STUDY_CHOICES,
+          ...(rca ? { glossary: RCA_GLOSSARY } : {}),
           grammar: grammar as WorldGrammar,
           legend: buildLegend(grammar, schema as SystemSchema),
           schema,
@@ -237,7 +267,7 @@ export async function startStudyServer(opts: StudyOptions) {
         if (s!.answered.has(key)) return json(res, 409, { error: '이미 답한 과제입니다' });
         s!.answered.add(key);
         const answer = typeof b.answer === 'string' ? b.answer : null;
-        const choice = (STUDY_ANOMALIES as readonly string[]).includes(String(b.choice)) ? (String(b.choice) as StudyAnomaly) : null;
+        const choice = ((rca ? RCA_KINDS : STUDY_ANOMALIES) as readonly string[]).includes(String(b.choice)) ? String(b.choice) : null;
         const gaveUp = !!b.gaveUp;
         const timedOut = !!b.timedOut;
         const selections = Array.isArray(b.selections) ? (b.selections as { t: number; key: string }[]).filter((x) => typeof x?.t === 'number' && typeof x?.key === 'string').slice(0, 500) : [];
@@ -247,6 +277,7 @@ export async function startStudyServer(opts: StudyOptions) {
         const firstHit = t.target ? selections.find((x) => x.key === t.target)?.t ?? null : null;
         record(s!, {
           type: 'trial',
+          task,
           key,
           index: t.index,
           practice: t.practice,
@@ -322,12 +353,12 @@ export async function startStudyServer(opts: StudyOptions) {
     }
     if (req.method === 'GET' && url.pathname === '/api/study/admin/report') {
       const includePilot = url.searchParams.get('pilot') === '1';
-      const md = [studyReportMarkdown(analyzeStudy(records, { includePilot }), '전체'), studyReportMarkdown(analyzeStudy(records, { includePilot, group: 'none' }), '개발자가 아닌 참가자만')].join('\n\n');
+      const md = [studyReportMarkdown(analyzeStudy(records, { includePilot, task }), `전체${rca ? ' — 근본 원인 찾기' : ''}`), studyReportMarkdown(analyzeStudy(records, { includePilot, task, group: 'none' }), '개발자가 아닌 참가자만')].join('\n\n');
       return json(res, 200, { markdown: md });
     }
     if (req.method === 'GET' && url.pathname === '/api/study/admin/export.csv') {
       res.writeHead(200, { 'content-type': 'text/csv; charset=utf-8', 'content-disposition': 'attachment; filename="isomorph-study.csv"', 'cache-control': 'no-store' });
-      return res.end(`\ufeff${studyCsv(records, { includePilot: url.searchParams.get('pilot') === '1' })}`);
+      return res.end(`\ufeff${studyCsv(records, { includePilot: url.searchParams.get('pilot') === '1', task })}`);
     }
     if (req.method === 'POST' && url.pathname === '/api/study/admin/exclude') {
       const b = await readBody(req);

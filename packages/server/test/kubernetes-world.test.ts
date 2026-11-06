@@ -151,4 +151,35 @@ describe('Kubernetes → world', () => {
       await ro.stop();
     }
   });
+  it('climbs from a deployment to the node its pods share when that node stops (deployment ← pods → node)', async () => {
+    // 1) 노드가 멈춘다  2) 그 다음 관측에서 그 위의 파드가 준비를 잃고 디플로이먼트가 모자라진다
+    kube.setNodeReady('kind-control-plane', false);
+    await rt.refresh();
+    await new Promise((r) => setTimeout(r, 5));
+    kube.podsOnNode('kind-control-plane', false);
+    await rt.refresh();
+    try {
+      const web = rt.inspect('deployments:default/web');
+      expect(web.violations).toHaveLength(1);
+      // 디플로이먼트와 노드는 서로를 가리키지 않는다: 사이의 파드로만 이어진다
+      expect(web.diagnosis).toMatchObject({ pattern: 'linked', title: '함께 기댄 곳이 먼저 법칙을 어김' });
+      expect(web.diagnosis!.detail).toContain('nodes #kind-control-plane');
+      expect(web.chain!.map((s) => [s.collection, String(s.pk), s.via])).toEqual([['nodes', 'kind-control-plane', 'linked']]);
+      // 앞의 시험에서 늘였다 줄인 web 의 파드 중 그 노드 위에서 준비를 잃은 것만 센다
+      const lost = rt.lastSnapshot!.collections.pods.filter((p) => p.deployment_id === 'default/web' && p.node_id === 'kind-control-plane' && p.phase === 'Unknown').length;
+      expect(lost).toBeGreaterThanOrEqual(2);
+      expect(web.chain![0].through).toEqual({ collection: 'pods', title: expect.any(String), count: lost });
+      // 한 장애로 묶인다: 근본 원인은 노드
+      const inc = rt.incidents.all().find((i) => i.closedAt === null && i.rootKey === 'nodes:kind-control-plane');
+      expect(inc).toBeDefined();
+      expect(inc!.violations.map((v) => `${v.collection}:${v.pk}`)).toEqual(expect.arrayContaining(['nodes:kind-control-plane', 'deployments:default/web']));
+      // 처음부터 탈이 나 있던 다른 노드(kind-worker)는 원인으로 끌려오지 않는다
+      expect(JSON.stringify(web.chain)).not.toContain('kind-worker');
+    } finally {
+      kube.setNodeReady('kind-control-plane', true);
+      kube.podsOnNode('kind-control-plane', true);
+      await rt.refresh();
+    }
+    expect(rt.inspect('deployments:default/web').violations).toHaveLength(0);
+  });
 });

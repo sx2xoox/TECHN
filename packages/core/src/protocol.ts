@@ -123,6 +123,8 @@ export interface ChainStep {
   /** blame: 그곳에서 오류가 시작됨(트레이스 등 시스템이 계산한 인과), linked: 그곳이 먼저 법칙을 어김(시간 순서) */
   via: 'blame' | 'linked';
   crossSystem: boolean;
+  /** 직접 이어지지 않고 사이의 행들(예: 파드)을 거쳐 이어진 경우: 그 행들의 종류와 수 */
+  through?: { collection: string; title: string; count: number };
 }
 
 export interface RelatedEntity {

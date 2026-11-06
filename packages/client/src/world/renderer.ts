@@ -8,11 +8,13 @@ import { BuildingView, NpcView, pixelText, type ViewContext } from './views.ts';
 extensions.add(CullerPlugin);
 TextureStyle.defaultOptions.scaleMode = 'nearest';
 
-const ZOOMS = [0.05, 0.08, 0.12, 0.2, 0.3, 0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3, 4, 5];
+const ZOOMS = [0.05, 0.08, 0.12, 0.2, 0.3, 0.5, 0.65, 0.75, 1, 1.25, 1.5, 2, 2.5, 3, 4, 5];
 
 export interface TownCallbacks {
   onSelect(id: string | null): void;
   onHover(id: string | null, x: number, y: number): void;
+  /** 캔버스 오른쪽을 덮는 살펴보기 창의 너비(연결된 곳을 보여줄 때 그 밑으로 숨기지 않게). 기본 410, 창이 캔버스 밖이면 0 */
+  overlayRight?: number;
 }
 
 /** 픽셀 마을 렌더러: 세계 상태(WorldState)만 보고 그린다. */
@@ -32,7 +34,7 @@ export class Town {
   private layout: TownLayout | null = null;
   private grammar: WorldGrammar | null = null;
   private world: WorldState | null = null;
-  private zoomIndex = 10;
+  private zoomIndex = ZOOMS.indexOf(2);
   private time = 0;
   private selected: string | null = null;
   private preview: BuildingView | null = null;
@@ -116,7 +118,7 @@ export class Town {
     if (pts.length < 2) return;
     const { width, height } = this.app.screen;
     const narrow = width < 700;
-    const area = { x0: 24, y0: 70, x1: narrow ? width - 24 : width - 410, y1: height - 70 };
+    const area = { x0: 24, y0: 70, x1: narrow ? width - 24 : width - (this.cb.overlayRight ?? 410), y1: height - 70 };
     let z = ZOOMS[this.zoomIndex];
     const inView = (p: { x: number; y: number }) => {
       const sx = this.camera.x + p.x * z;
@@ -129,7 +131,9 @@ export class Town {
     const minY = Math.min(...pts.map((p) => p.y)) - 50;
     const maxY = Math.max(...pts.map((p) => p.y)) + 30;
     let idx = this.zoomIndex;
-    while (idx > 0 && ((maxX - minX) * ZOOMS[idx] > area.x1 - area.x0 || (maxY - minY) * ZOOMS[idx] > area.y1 - area.y0)) idx--;
+    // 구역 요약이 될 만큼 물러나지는 않는다(요약에서는 연결선을 그리지 않는다)
+    const floor = ZOOMS.findIndex((x) => x > this.lodZoom());
+    while (idx > floor && ((maxX - minX) * ZOOMS[idx] > area.x1 - area.x0 || (maxY - minY) * ZOOMS[idx] > area.y1 - area.y0)) idx--;
     this.zoomIndex = idx;
     z = ZOOMS[idx];
     this.camera.scale.set(z);
@@ -268,9 +272,19 @@ export class Town {
     this.updateLabels();
   }
 
+  /** 구역 요약으로 바꾸는 확대 수준. 개체가 적은 세계는 멀리서도 개체를 그린다(요약은 큰 세계를 위한 것) */
+  private lodZoom() {
+    return this.views.size < 150 ? 0.2 : Town.LOD_ZOOM;
+  }
+
+  /** 캔버스를 담은 요소의 크기가 바뀌었을 때(숨겨 둔 채 만든 뒤 보이게 했을 때 등) */
+  resize() {
+    this.app.resize();
+  }
+
   /** 확대 수준에 따라 개체 표시 ↔ 구역 요약 전환 */
   private updateLod() {
-    const want = ZOOMS[this.zoomIndex] <= Town.LOD_ZOOM && this.views.size > 0;
+    const want = ZOOMS[this.zoomIndex] <= this.lodZoom() && this.views.size > 0;
     if (want !== this.lod) {
       this.lod = want;
       // 숨긴 층은 렌더링·컬링 순회에서도 빠지게 renderable 까지 끈다
@@ -292,7 +306,7 @@ export class Town {
     if (on === this.ctx.showLabels) return;
     this.ctx.showLabels = on;
     for (const v of this.views.values()) if (v instanceof BuildingView) v.setLabels(on);
-    this.labelsLayer.visible = ZOOMS[this.zoomIndex] >= 0.75;
+    this.labelsLayer.visible = ZOOMS[this.zoomIndex] >= 0.65;
   }
 
   select(id: string | null) {

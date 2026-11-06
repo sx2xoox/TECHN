@@ -158,7 +158,7 @@ describe('running a study', () => {
   it('requires an access code when one is set, and refuses to open on an external address without one', async () => {
     const t = await server({ accessCode: 'tiger-42' });
     try {
-      expect(await (await fetch(`${t.base}/api/study/config`)).json()).toEqual({ requiresCode: true });
+      expect(await (await fetch(`${t.base}/api/study/config`)).json()).toEqual({ requiresCode: true, task: 'locate' });
       expect((await t.post('/api/study/session', { developer: 'none', code: 'nope' })).status).toBe(403);
       expect((await t.post('/api/study/session', { developer: 'none', code: 'tiger-42' })).status).toBe(200);
     } finally {

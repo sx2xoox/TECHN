@@ -102,6 +102,96 @@ function indexEvents(events: ChangeEvent[]): EventIndex {
   return ix;
 }
 
+/** 위반이 시작된 시각(행 하나로 판단하는 법칙만): 지키던 값이 깨진 마지막 변경. 모르면 undefined */
+export function violationOnset(v: Violation, events: ChangeEvent[], inv?: Invariant): number | undefined {
+  if (!inv || !ROW_LOCAL.has(inv.expr.op)) return undefined;
+  const ix = indexEvents(events);
+  let onset: number | undefined;
+  for (const e of [...(ix.byRow.get(rowKey(v.collection, String(v.pk))) ?? [])].sort((a, b) => a.ts - b.ts)) {
+    const afterOk = e.after ? evalExpr(inv.expr, e.after, NO_CTX) : true;
+    const beforeOk = e.before ? evalExpr(inv.expr, e.before, NO_CTX) : true;
+    if (!afterOk && beforeOk) onset = e.ts;
+  }
+  return onset;
+}
+
+/** 이 사건으로 그 행이 자기 법칙을 어기기 시작했나(지키던 → 어김). 어긴 법칙의 제목 */
+function lawBrokenBy(e: ChangeEvent, laws: Invariant[]): string | undefined {
+  if (!e.after) return undefined;
+  for (const l of laws) {
+    if (l.collection !== e.collection || l.status === 'dismissed' || !ROW_LOCAL.has(l.expr.op)) continue;
+    if (!evalExpr(l.expr, e.after, NO_CTX) && (e.before ? evalExpr(l.expr, e.before, NO_CTX) : true)) return l.title;
+  }
+  return undefined;
+}
+
+/** 함께 기댄 곳: 이 행과 그곳 사이를 잇는 행들(예: 디플로이먼트 ← 파드 → 노드) */
+export interface SharedUpstream {
+  collection: string;
+  pk: Pk;
+  /** 그곳이 먼저 어긴 법칙 */
+  broke: string;
+  at: number;
+  /** 잇는 행들: 컬렉션과, 위반 직전에 바뀐 그 행의 수 */
+  through: { collection: string; count: number };
+  crossSystem: boolean;
+}
+
+/**
+ * 직접 이어지지 않은 원인 찾기: 이 행을 가리키는 행들(파드)이 위반 직전(같은 순간 포함)에 바뀌었고,
+ * 그 행들이 함께 가리키는 다른 곳(노드)이 그보다 '먼저' 자기 법칙을 어겼다면 그곳.
+ * 디플로이먼트와 노드처럼 서로를 직접 가리키지 않고 사이의 행으로만 이어지는 경우를 위한 것이다.
+ * 늘 새로 생기는 오가는 행(스팬 등)은 skip 으로 빼야 한다(어느 위반과도 '직전에 바뀐 연결' 이 되어 근거가 못 된다).
+ */
+export function findSharedUpstream(v: Violation, events: ChangeEvent[], schema: SystemSchema, inv: Invariant | undefined, laws: Invariant[], skip: (collection: string) => boolean, windowMs = 20_000): SharedUpstream | null {
+  const end = violationOnset(v, events, inv);
+  if (end === undefined) return null;
+  const start = end - windowMs;
+  const ix = indexEvents(events);
+  const vKey = String(v.pk);
+  const broke = new Map<string, { title: string; at: number } | null>();
+  const brokeBefore = (collection: string, pk: unknown) => {
+    const k = rowKey(collection, pk);
+    if (!broke.has(k)) {
+      let hit: { title: string; at: number } | null = null;
+      for (const e of ix.byRow.get(k) ?? []) {
+        if (e.ts < start || e.ts >= end) continue; // 같은 순간은 어느 쪽이 먼저인지 모른다
+        const t = lawBrokenBy(e, laws);
+        if (t && (!hit || e.ts < hit.at)) hit = { title: t, at: e.ts };
+      }
+      broke.set(k, hit);
+    }
+    return broke.get(k)!;
+  };
+  const found = new Map<string, SharedUpstream & { rows: Set<string> }>();
+  for (const c of schema.collections) {
+    if (skip(c.name)) continue;
+    const back = c.fields.filter((f) => f.ref?.collection === v.collection);
+    const out = c.fields.filter((f) => f.ref && !back.includes(f) && f.ref.field === schema.collections.find((x) => x.name === f.ref!.collection)?.primaryKey);
+    if (!back.length || !out.length) continue;
+    for (const e of ix.byCollection.get(c.name) ?? []) {
+      if (e.ts < start || e.ts > end) continue;
+      const row = e.after ?? e.before;
+      if (!row || !back.some((f) => String(row[f.name]) === vKey)) continue;
+      for (const f of out) {
+        const val = row[f.name];
+        if (val === null || val === undefined || (f.ref!.collection === v.collection && String(val) === vKey)) continue;
+        const b = brokeBefore(f.ref!.collection, val);
+        // 사이의 행은 그곳이 깨진 '뒤에' 바뀐 것만 근거로 센다(그 전의 변화는 이 일과 상관없다)
+        if (!b || e.ts < b.at) continue;
+        const k = rowKey(f.ref!.collection, val);
+        let s = found.get(k);
+        if (!s) found.set(k, (s = { collection: f.ref!.collection, pk: val as Pk, broke: b.title, at: b.at, through: { collection: c.name, count: 0 }, crossSystem: !!f.ref!.crossSystem || back.some((x) => x.ref!.crossSystem), rows: new Set() }));
+        s.rows.add(String(row[c.primaryKey]));
+      }
+    }
+  }
+  const best = [...found.values()].sort((a, b) => b.rows.size - a.rows.size || a.at - b.at)[0];
+  if (!best) return null;
+  const { rows, ...rest } = best;
+  return { ...rest, through: { collection: rest.through.collection, count: rows.size } };
+}
+
 export function findCauses(v: Violation, events: ChangeEvent[], schema: SystemSchema, windowMs = 20_000, rowNow?: Row, inv?: Invariant, laws?: Invariant[]): CauseEvent[] {
   const ix = indexEvents(events);
   const sensCache = new Map<string, Set<string>>();
@@ -123,14 +213,7 @@ export function findCauses(v: Violation, events: ChangeEvent[], schema: SystemSc
   };
   const vKey = String(v.pk);
   const selfEvents = [...(ix.byRow.get(rowKey(v.collection, vKey)) ?? [])].sort((a, b) => a.ts - b.ts);
-  let onset: number | undefined;
-  if (inv && ROW_LOCAL.has(inv.expr.op)) {
-    for (const e of selfEvents) {
-      const afterOk = e.after ? evalExpr(inv.expr, e.after, NO_CTX) : true;
-      const beforeOk = e.before ? evalExpr(inv.expr, e.before, NO_CTX) : true;
-      if (!afterOk && beforeOk) onset = e.ts;
-    }
-  }
+  const onset = violationOnset(v, events, inv);
   const end = onset ?? (selfEvents.length ? selfEvents.at(-1)!.ts : ix.maxTs);
   const start = end - windowMs;
   const out: CauseEvent[] = [];
