@@ -203,7 +203,9 @@ export class OtelAdapter implements Adapter {
     if (this.window.length > 400_000) this.window = this.window.slice(-300_000);
     // 최근 것만 남긴다
     if (this.spans.size > max) for (const id of [...this.spans.values()].sort((a, b) => a.end - b.end).slice(0, this.spans.size - max).map((x) => x.id)) this.spans.delete(id);
-    if (this.owner.size > max * 20) for (const id of [...this.owner.keys()].slice(0, this.owner.size - max * 20)) this.owner.delete(id);
+    // 부모 스팬의 서비스 기억: 통계 창 전체를 덮어야 '받은 호출'·'부른 쪽' 을 바르게 가른다(창이 큰 시스템에서는 수십만 개)
+    const ownerCap = Math.max(max * 20, 500_000);
+    if (this.owner.size > ownerCap) for (const id of [...this.owner.keys()].slice(0, this.owner.size - ownerCap)) this.owner.delete(id);
     if (this.listeners.size && !this.notifyTimer) {
       this.notifyTimer = setTimeout(() => {
         this.notifyTimer = null;
@@ -244,6 +246,8 @@ export class OtelAdapter implements Adapter {
             { name: 'last_seen_at', type: 'timestamp', nullable: false },
             // 이 서비스의 실패가 시작된 곳: 실패한 요청마다 오류가 난 가장 깊은 스팬의 서비스(자기 자신이면 null)
             { name: 'error_origin_id', type: 'string', nullable: true, ref: { collection: 'services', field: 'id', blame: true }, refEnforced: false },
+            // 이 서비스가 느린 까닭: 느려진 요청에서 시간이 걸린 곳 — 한 곳을 부르는 호출만 평소보다 느리면 그 불린 서비스(자기 자신이면 null)
+            { name: 'latency_origin_id', type: 'string', nullable: true, ref: { collection: 'services', field: 'id', blame: true }, refEnforced: false },
           ],
         },
         {
@@ -331,7 +335,7 @@ export class OtelAdapter implements Adapter {
       if (b.p90.length > 40) (b.p90.shift(), b.err.shift());
       b.at = now;
     }
-    return { latency, latencyLimit, errorLimit, over: !ok };
+    return { latency, latencyLimit, errorLimit, over: !ok, latencyOver: latencyLimit !== null && latency > latencyLimit };
   }
 
   async snapshot(only?: string[]): Promise<Snapshot> {
@@ -344,7 +348,16 @@ export class OtelAdapter implements Adapter {
     if (!only || only.includes('services')) {
       const instrumented = new Map([...this.services.keys()].map((n) => [normName(n), n]));
       // 다른 서비스를 부른 스팬이면 불린 서비스(계측된 서비스면 그 이름, 아니면 메서드 이름에서 알아낸 이름)
+      // 다른 서비스의 자식 스팬이 있으면 그 서비스가 불린 쪽이다(이름 규칙과 상관없이 — HTTP 든 gRPC 든)
+      const crossChild = new Map<string, string>();
+      for (const s of recent) {
+        if (!s.parentId || crossChild.has(s.parentId)) continue;
+        const parentService = this.owner.get(s.parentId);
+        if (parentService && parentService !== s.service) crossChild.set(s.parentId, s.service);
+      }
       const peerOf = (s: SpanRec): string | null => {
+        const child = crossChild.get(s.id);
+        if (child) return child;
         const p = rpcPeer(s.name);
         if (!p || normName(p) === normName(s.service)) return null;
         return instrumented.get(normName(p)) ?? p;
@@ -364,6 +377,8 @@ export class OtelAdapter implements Adapter {
       // 부르는 쪽 전체가 느려졌는가: 한 서비스가 부르는 곳 둘 이상이 한꺼번에 평소보다 느리면 그 서비스 자신이 느린 것이다
       // (CPU·메모리가 모자란 서비스는 모든 바깥 호출이 느려 보인다). 그런 부르는 쪽의 스팬은 불린 쪽의 지연 판정에 쓰지 않는다
       const slowCallers = new Set<string>();
+      /** 부르는 쪽마다 평소보다 느려진 호출(불린 서비스와 한도에 대한 비율) — 지연이 비롯된 곳을 고르는 데 */
+      const slowCalls = new Map<string, { callee: string; ratio: number }[]>();
       const byCaller = new Map<string, Map<string, number[]>>();
       for (const [callee, xs] of callsTo) {
         for (const x of xs) {
@@ -383,9 +398,13 @@ export class OtelAdapter implements Adapter {
           const pb = this.pairBase.get(key) ?? { p90: [], at: -Infinity };
           this.pairBase.set(key, pb);
           const now90 = p90(ds);
-          const over = pb.p90.length >= WARMUP && now90 > Math.max(median(pb.p90) * (this.opts.latencyFactor ?? LATENCY_FACTOR), median(pb.p90) + 10);
+          const pairLimit = Math.max(median(pb.p90) * (this.opts.latencyFactor ?? LATENCY_FACTOR), median(pb.p90) + 10);
+          const over = pb.p90.length >= WARMUP && now90 > pairLimit;
           if (pb.p90.length >= WARMUP) judged++;
-          if (over) slow++;
+          if (over) {
+            slow++;
+            slowCalls.set(caller, [...(slowCalls.get(caller) ?? []), { callee, ratio: now90 / pairLimit }]);
+          }
           else if (now - pb.at >= windowMs / 4) {
             pb.p90.push(now90);
             if (pb.p90.length > 40) pb.p90.shift();
@@ -423,6 +442,9 @@ export class OtelAdapter implements Adapter {
           instrumented: isInstrumented,
           last_seen_at: new Date(last).toISOString(),
           error_origin_id: origins.get(name) ?? null,
+          // 이 서비스가 지연 한도를 넘었고, 그 사이 한 곳(들)을 부르는 호출만 평소보다 느리면 그중 가장 많이 느려진 곳.
+          // 부르는 곳 대부분이 한꺼번에 느리면(이 서비스 자신이 느린 것) 비워 둔다
+          latency_origin_id: j.latencyOver && isInstrumented && !slowCallers.has(name) ? [...(slowCalls.get(name) ?? [])].sort((a, b) => b.ratio - a.ratio)[0]?.callee ?? null : null,
         };
       };
       // 서비스가 '받은' 호출: 서버·소비자 스팬, 없으면 그 서비스의 루트 스팬

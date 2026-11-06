@@ -11,3 +11,4 @@ data/study/
 dist-snapshot/
 # 공개 RCA 벤치마크(RCAEval) 내려받은 자료: 크고, 남의 자료다
 data/rcaeval/
+data/anomod/

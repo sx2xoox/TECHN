@@ -4,6 +4,7 @@ import { CompositeAdapter, type CompositeLinkSpec } from './composite.ts';
 import { DockerAdapter, type DockerAdapterOptions } from './docker.ts';
 import { HttpJsonAdapter, type HttpJsonAdapterOptions } from './http-json.ts';
 import { KubernetesAdapter, type KubernetesAdapterOptions } from './kubernetes.ts';
+import { MetricsAdapter, PROMETHEUS_DEFAULTS, type MetricsAdapterOptions } from './metrics.ts';
 import { OtelAdapter, type OtelAdapterOptions } from './otel.ts';
 import { PostgresAdapter, type PostgresAdapterOptions } from './postgres.ts';
 import type { Adapter } from './types.ts';
@@ -27,6 +28,8 @@ export type AdapterConfig =
   | ({ type: 'otel' } & OtelAdapterOptions)
   /** Kubernetes(kubeconfig 또는 server/token) */
   | ({ type: 'kubernetes' } & KubernetesAdapterOptions)
+  /** 서비스 지표(Prometheus HTTP API): 지표마다 '평소보다 크게 오르면 안 됨' */
+  | ({ type: 'prometheus' } & Omit<MetricsAdapterOptions, 'ignore' | 'now' | 'fetchImpl'> & { url: string })
   /** 직접 만든 어댑터 모듈: default export 가 (options) => Adapter (defineAdapter 사용 권장) */
   | { type: 'module'; path: string; options?: Record<string, unknown> }
   /** 여러 시스템을 한 세계로(이름 = 컬렉션 앞에 붙는 짧은 이름) */
@@ -46,6 +49,8 @@ export function createAdapter(config: AdapterConfig): Adapter {
       return new OtelAdapter(config);
     case 'kubernetes':
       return new KubernetesAdapter(config);
+    case 'prometheus':
+      return new MetricsAdapter({ system: 'prometheus', queries: PROMETHEUS_DEFAULTS, by: 'container', ...config });
     case 'composite':
       return new CompositeAdapter({ ...config, parts: config.parts.map((p) => ({ name: p.name, adapter: createAdapter(p.adapter) })) });
   }
@@ -64,3 +69,4 @@ export async function loadAdapter(config: AdapterConfig, baseDir = process.cwd()
   if (!adapter || typeof (adapter as Adapter).snapshot !== 'function') throw new Error(`${config.path} 는 어댑터를 내보내지 않습니다(default export 가 (options) => Adapter 여야 함)`);
   return adapter as Adapter;
 }
+export * from './metrics.ts';

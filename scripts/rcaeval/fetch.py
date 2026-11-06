@@ -1,10 +1,11 @@
 """
 RCAEval(공개 RCA 벤치마크, MIT 라이선스, Pham et al. 2025) 사례를 내려받아 ISOMORPH 재생용 스팬 파일로 바꾼다.
-  python3 -I scripts/rcaeval/fetch.py --suites re2ob,re3ob --out data/rcaeval [--limit 5] [--keep-parquet]
+  python3 -I scripts/rcaeval/fetch.py --suites re2ob,re3ob --out data/rcaeval [--limit 5] [--keep-parquet] [--what traces|metrics]
 
 - 사례 목록은 Hugging Face 의 공개 색인(phamquiluan/RCAEval)에서 읽는다.
 - 사례마다 inject_time.txt 와 traces.parquet 만 받는다(지표·로그는 받지 않는다).
 - traces.parquet 을 spans.jsonl.gz 로 바꾼다: 한 줄 = [시작ms, 길이ms, trace, span, parent, service, 이름, 상태 코드], 시작 시각 순.
+- --what metrics: metrics.parquet(서비스별 지표, 1초 간격)을 metrics.json.gz 로 바꾼다: {"time": [...], "cols": {이름: [값|null...]}}.
 - 내려받은 파일은 자료로만 읽는다(실행하지 않는다). 필요: pip install pyarrow
 """
 import argparse, gzip, json, os, sys, time, urllib.request
@@ -30,6 +31,7 @@ def main():
     ap.add_argument('--out', default='data/rcaeval')
     ap.add_argument('--limit', type=int, default=0)
     ap.add_argument('--keep-parquet', action='store_true')
+    ap.add_argument('--what', default='traces', choices=['traces', 'metrics'])
     a = ap.parse_args()
     import pyarrow.parquet as pq
 
@@ -42,10 +44,26 @@ def main():
         print(f'{suite}: 사례 {len(cases)}개', flush=True)
         for i, case in enumerate(cases):
             d = os.path.join(a.out, case)
-            out = os.path.join(d, 'spans.jsonl.gz')
+            out = os.path.join(d, 'spans.jsonl.gz' if a.what == 'traces' else 'metrics.json.gz')
             if os.path.exists(out):
                 continue
             os.makedirs(d, exist_ok=True)
+            if a.what == 'metrics':
+                with open(os.path.join(d, 'inject_time.txt'), 'wb') as f:
+                    f.write(get(f'{RAW}/{case}/inject_time.txt'))
+                pqf = os.path.join(d, 'metrics.parquet')
+                with open(pqf, 'wb') as f:
+                    f.write(get(f'{RAW}/{case}/metrics.parquet'))
+                t = pq.read_table(pqf).to_pydict()
+                times = [int(x) for x in t.pop('time')]
+                clean = lambda v: None if v is None or v != v else float(v)
+                with gzip.open(out + '.tmp', 'wt') as g:
+                    json.dump({'time': times, 'cols': {k: [clean(v) for v in vs] for k, vs in t.items()}}, g, separators=(',', ':'))
+                os.replace(out + '.tmp', out)
+                if not a.keep_parquet:
+                    os.remove(pqf)
+                print(f'  [{i + 1}/{len(cases)}] {case}: 지표 {len(t)}개 × {len(times)}', flush=True)
+                continue
             files = {x['path'].split('/')[-1] for x in json.loads(get(f'{API}/{case}?recursive=true'))}
             if 'traces.parquet' not in files:
                 print(f'  {case}: 트레이스 없음(건너뜀)', flush=True)

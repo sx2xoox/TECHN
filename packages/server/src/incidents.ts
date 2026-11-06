@@ -32,7 +32,7 @@ export class IncidentBook {
     // 늦게 드러난 사슬로 합치기는 관측마다 한 번만(위반마다 하면 장애가 몰릴 때 제곱으로 느려진다)
     rt.on('world', (w: WorldState) => {
       if (this.resumed.size) this.reconcile(w);
-      this.mergeLate();
+      this.mergeLate(w.ts);
     });
   }
 
@@ -128,8 +128,8 @@ export class IncidentBook {
    * 늦게 드러난 사슬: 스스로를 근본 원인으로 삼았던 장애가 실은 다른 열린 장애의 근본 원인에서 번진 것이면 합친다.
    * 관측마다 한 번, 최근 2분 안에 열린 장애만 다시 본다(사슬은 보통 몇 초 안에 드러난다).
    */
-  private mergeLate(): void {
-    const now = Date.now();
+  /** now: 관측 시각(벽시계가 아니다 — 늦게 받은 관측·기록 재생에서도 '최근 2분' 이 맞게) */
+  private mergeLate(now: number): void {
     const open = this.open();
     for (const inc of open.filter((i) => now - i.openedAt < 120_000 && !i.observedFromStart).slice(0, 50)) {
       const r = inc.root;

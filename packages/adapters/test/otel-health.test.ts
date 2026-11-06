@@ -129,4 +129,36 @@ describe('service health against its own normal (lessons from RCAEval)', () => {
     expect(r.checkoutservice.p90_latency_ms as number).toBeGreaterThan(r.checkoutservice.latency_limit_ms as number);
     for (const callee of ['emailservice', 'paymentservice']) expect(r[callee].p90_latency_ms as number, callee).toBeLessThanOrEqual(r[callee].latency_limit_ms as number);
   });
+
+  it('points a slow caller at the callee its time goes to (latency origin), found from the trace structure alone', async () => {
+    const clock = { t: 0 };
+    const a = new OtelAdapter({ port: 0, now: () => clock.t });
+    const start = 30_000_000;
+    // HTTP 처럼 이름 규칙이 없는 호출: 부르는 쪽의 'GET' 스팬 아래에 불린 쪽의 서버 스팬. 장애: travel 앞의 네트워크 지연(서버 스팬은 그대로)
+    const tick = (from: number, to: number, delay: number) => {
+      const spans: S[] = [];
+      for (let t = from; t < to; t += 250) {
+        const root = id();
+        spans.push({ service: 'admin-travel', name: 'GET /admin/trips', span: root, start: t, ms: 12 + delay });
+        for (const [callee, ms] of [['travel', 3 + delay], ['station', 3]] as const) {
+          const c = id();
+          spans.push({ service: 'admin-travel', name: 'GET', span: c, parent: root, start: t + 1, ms });
+          spans.push({ service: callee, name: `GET /api/${callee}`, parent: c, start: t + 1 + (callee === 'travel' ? delay / 2 : 0), ms: 2 });
+        }
+      }
+      a.ingest(req(spans) as never);
+    };
+    tick(start, start + 120_000, 0);
+    for (let t = start + 60_000; t <= start + 120_000; t += 15_000) await rowsAt(a, clock, t);
+    for (const [from, to] of [[120_000, 135_000], [135_000, 150_000], [150_000, 165_000]]) {
+      tick(start + from, start + to, 80);
+      await rowsAt(a, clock, start + to);
+    }
+    const r = await rowsAt(a, clock, start + 165_000);
+    expect(r['admin-travel'].p90_latency_ms as number).toBeGreaterThan(r['admin-travel'].latency_limit_ms as number);
+    expect(r['admin-travel'].latency_origin_id).toBe('travel');
+    // 불린 쪽도 '부르는 쪽에서 본' 지연으로 법칙을 어긴다(그래야 사슬이 그곳까지 오른다)
+    expect(r.travel.p90_latency_ms as number).toBeGreaterThan(r.travel.latency_limit_ms as number);
+    expect(r.station.p90_latency_ms as number).toBeLessThanOrEqual(r.station.latency_limit_ms as number);
+  });
 });

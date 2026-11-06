@@ -66,7 +66,7 @@ export function loadAssets(dir?: string): AssetManifest | null {
  */
 type TargetOpts = { schema?: string; namespace?: string; port?: number; host?: string; write?: IsomorphConfig['writeMode']; context?: string; kubeconfig?: string };
 
-const TARGETS_HELP = 'postgres://… · https://… · otel · docker · kubernetes';
+const TARGETS_HELP = 'postgres://… · https://… · otel · docker · kubernetes · prometheus[=http://…:9090]';
 
 /** 대상 하나(또는 같은 호스트의 HTTP 경로 묶음) → 어댑터 설정과 짧은 이름 */
 function adapterFor(group: string[], opts: TargetOpts): { name: string; adapter: AdapterConfig } {
@@ -92,6 +92,8 @@ function adapterFor(group: string[], opts: TargetOpts): { name: string; adapter:
     return { name: 'otel', adapter: { type: 'otel', port: 4318, ...(opts.host ? { host: opts.host } : {}), ...(process.env.ISOMORPH_OTLP_TOKEN ? { token: process.env.ISOMORPH_OTLP_TOKEN } : {}) } };
   }
   if (target === 'docker') return { name: 'docker', adapter: { type: 'docker' } };
+  // prometheus 또는 prometheus=http://주소:9090 (기본 http://127.0.0.1:9090)
+  if (target === 'prometheus' || target.startsWith('prometheus=')) return { name: 'metrics', adapter: { type: 'prometheus', url: target.includes('=') ? target.slice(target.indexOf('=') + 1) : 'http://127.0.0.1:9090' } };
   if (target === 'kubernetes' || target === 'k8s') {
     const ns = opts.namespace ?? opts.schema;
     return { name: 'k8s', adapter: { type: 'kubernetes', ...(ns ? { namespace: ns } : {}), ...(opts.context ? { context: opts.context } : {}), ...(opts.kubeconfig ? { kubeconfig: opts.kubeconfig } : {}) } };
