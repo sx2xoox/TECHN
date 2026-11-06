@@ -33,13 +33,19 @@ const playwright: any = require('playwright');
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'isomorph-study-rca-'));
 const conditions = ['world', 'table', 'table+alerts'] as const;
 const srv = await startStudyServer({ port: 0, staticDir: path.join(root, 'packages/client/dist'), dataDir, task: 'rca', rcaHard: true, conditions: [...conditions], practicePerCondition: 1, timeLimitMs: 60_000, exposeAnswers: true });
-const browser = await playwright.chromium.launch();
+// 봇마다 새 브라우저를 띄운다: CI(소프트웨어 렌더링)에서 큰 WebGL 캔버스를 쓴 뒤의 브라우저가 다음 페이지를 열지 못하고 멈춘 적이 두 번 있었다
+// (서버는 바로 답했다 — 아래 진단). 같은 브라우저를 다시 쓰지 않으면 그 상태가 다음 봇으로 옮겨 가지 않는다
+let browser = await playwright.chromium.launch();
 type Trial = { key: number; condition: string; practice: boolean; index: number; symptom: string; insights?: Record<string, { chain: { key: string }[] }>; world: { entities: { id: string; source: { collection: string; pk: unknown }; archetype: string }[] } | null; oracle: { target: string; anomaly: string } };
 const errors: string[] = [];
 const usedChain: string[] = [];
 
 try {
   for (let p = 0; p < 2; p++) {
+    if (p > 0) {
+      await browser.close();
+      browser = await playwright.chromium.launch();
+    }
     const page = await browser.newPage({ viewport: { width: 1440, height: 860 }, deviceScaleFactor: shotsDir && p === 0 ? 2 : 1 });
     page.on('pageerror', (e: Error) => errors.push(e.message));
     const phase = () => page.evaluate('window.__study?.phase') as Promise<string>;
