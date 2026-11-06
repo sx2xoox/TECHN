@@ -223,7 +223,7 @@ export interface IncidentViolation {
 
 export interface IncidentStep {
   at: number;
-  kind: 'start' | 'end' | 'action' | 'verified' | 'failed' | 'undone';
+  kind: 'start' | 'end' | 'action' | 'verified' | 'failed' | 'undone' | 'note';
   text: string;
   entityId: string | null;
 }

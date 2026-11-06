@@ -76,8 +76,40 @@ const NO_CTX: EvalContext = { valuesOf: () => new Set(), countOf: () => 0 };
  * 위반이 '시작된' 순간(법칙을 지키던 값이 깨진 변경)을 기준으로 앞뒤 사건을 모은다.
  * 위반 이후의 조치(예: 운영자가 문을 잠근 것)를 원인으로 오인하지 않기 위함.
  */
+interface EventIndex {
+  byRow: Map<string, ChangeEvent[]>;
+  byCollection: Map<string, ChangeEvent[]>;
+  maxTs: number;
+}
+/** 같은 사건 배열로 여러 번 원인을 찾을 때(장애 때 위반 수백 개) 매번 전부를 훑지 않도록 한 번 색인한다. 배열은 바뀌지 않는다고 본다 */
+const INDEXES = new WeakMap<ChangeEvent[], EventIndex>();
+const rowKey = (collection: string, pk: unknown) => `${collection}\u0000${String(pk)}`;
+function indexEvents(events: ChangeEvent[]): EventIndex {
+  let ix = INDEXES.get(events);
+  if (ix) return ix;
+  ix = { byRow: new Map(), byCollection: new Map(), maxTs: 0 };
+  for (const e of events) {
+    const k = rowKey(e.collection, e.pk);
+    const a = ix.byRow.get(k);
+    if (a) a.push(e);
+    else ix.byRow.set(k, [e]);
+    const b = ix.byCollection.get(e.collection);
+    if (b) b.push(e);
+    else ix.byCollection.set(e.collection, [e]);
+    if (e.ts > ix.maxTs) ix.maxTs = e.ts;
+  }
+  INDEXES.set(events, ix);
+  return ix;
+}
+
 export function findCauses(v: Violation, events: ChangeEvent[], schema: SystemSchema, windowMs = 20_000, rowNow?: Row, inv?: Invariant, laws?: Invariant[]): CauseEvent[] {
-  const sens = (collection: string) => new Set(schema.collections.find((c) => c.name === collection)?.fields.filter((f) => f.sensitive).map((f) => f.name) ?? []);
+  const ix = indexEvents(events);
+  const sensCache = new Map<string, Set<string>>();
+  const sens = (collection: string) => {
+    let s = sensCache.get(collection);
+    if (!s) sensCache.set(collection, (s = new Set(schema.collections.find((c) => c.name === collection)?.fields.filter((f) => f.sensitive).map((f) => f.name) ?? [])));
+    return s;
+  };
   /** 이 사건으로 그 행이 자기 법칙을 어기기 시작했나(지키던 → 어김) */
   const brokeBy = (e: ChangeEvent): string | undefined => {
     if (!laws || !e.after) return undefined;
@@ -90,7 +122,7 @@ export function findCauses(v: Violation, events: ChangeEvent[], schema: SystemSc
     return undefined;
   };
   const vKey = String(v.pk);
-  const selfEvents = events.filter((e) => e.collection === v.collection && String(e.pk) === vKey).sort((a, b) => a.ts - b.ts);
+  const selfEvents = [...(ix.byRow.get(rowKey(v.collection, vKey)) ?? [])].sort((a, b) => a.ts - b.ts);
   let onset: number | undefined;
   if (inv && ROW_LOCAL.has(inv.expr.op)) {
     for (const e of selfEvents) {
@@ -99,7 +131,7 @@ export function findCauses(v: Violation, events: ChangeEvent[], schema: SystemSc
       if (!afterOk && beforeOk) onset = e.ts;
     }
   }
-  const end = onset ?? (selfEvents.length ? selfEvents.at(-1)!.ts : Math.max(0, ...events.map((e) => e.ts)));
+  const end = onset ?? (selfEvents.length ? selfEvents.at(-1)!.ts : ix.maxTs);
   const start = end - windowMs;
   const out: CauseEvent[] = [];
   const withBroke = (e: ChangeEvent, crossSystem: boolean) => {
@@ -124,10 +156,9 @@ export function findCauses(v: Violation, events: ChangeEvent[], schema: SystemSc
   const refFields = schema.collections.flatMap((c) =>
     c.fields.filter((f) => f.ref?.collection === v.collection).map((f) => ({ collection: c.name, field: f.name, crossSystem: !!f.ref?.crossSystem })),
   );
-  for (const e of events) {
-    if (e.ts < start || e.ts > end) continue;
-    for (const rf of refFields) {
-      if (e.collection !== rf.collection) continue;
+  for (const rf of refFields) {
+    for (const e of ix.byCollection.get(rf.collection) ?? []) {
+      if (e.ts < start || e.ts > end) continue;
       const row = e.after ?? e.before;
       if (!row || String(row[rf.field]) !== vKey) continue;
       out.push({
@@ -150,8 +181,7 @@ export function findCauses(v: Violation, events: ChangeEvent[], schema: SystemSc
       if (col.name !== v.collection) continue;
       for (const f of col.fields) {
         if (!f.ref || row[f.name] === null || row[f.name] === undefined) continue;
-        for (const e of events) {
-          if (e.collection !== f.ref.collection || String(e.pk) !== String(row[f.name])) continue;
+        for (const e of ix.byRow.get(rowKey(f.ref.collection, row[f.name])) ?? []) {
           if (e.kind === 'delete') {
             out.push({ ts: e.ts, at: e.ts, collection: e.collection, pk: e.pk, kind: 'delete', summary: `참조 대상 삭제됨 (${brief(e.before, sens(e.collection))})`, relation: 'referenced', ...(f.ref.crossSystem ? { crossSystem: true } : {}) });
             continue;

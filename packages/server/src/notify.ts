@@ -169,6 +169,11 @@ export function attachNotifier(rt: IsomorphRuntime, opts: NotifyOptions) {
     if (!timer) timer = setTimeout(() => void flush(), batchMs);
   };
 
+  const rootChange = (collection: string, pk: string, entityId: string | null) => {
+    const id = entityId ?? rt.inspectId?.(collection, pk) ?? null;
+    return id ? rt.inspect(id).revert?.changes : undefined;
+  };
+
   const flush = async () => {
     if (timer) clearTimeout(timer);
     timer = null;
@@ -184,7 +189,9 @@ export function attachNotifier(rt: IsomorphRuntime, opts: NotifyOptions) {
       items = shown.map((e) => {
         const v = e.violation;
         // 진단·근본 원인은 지금 세계에서 계산한다(살펴보기와 같은 결과, 민감 값은 가려짐)
-        const ins = e.phase === 'start' && e.entityId ? rt.inspect(e.entityId) : null;
+        // 세계에 그려지지 않은 행(종류별 개체 수 제한 밖)도 진단한다
+        const iid = e.entityId ?? rt.inspectId?.(v.collection, v.pk) ?? null;
+        const ins = e.phase === 'start' && iid ? rt.inspect(iid) : null;
         const diag = ins?.diagnosis ?? null;
         const last = ins?.chain?.at(-1);
         const root = last
@@ -202,7 +209,7 @@ export function attachNotifier(rt: IsomorphRuntime, opts: NotifyOptions) {
           diagnosis: diag ? { pattern: diag.pattern, title: diag.title, detail: diag.detail } : null,
           link: opts.publicUrl ? deepLink(opts.publicUrl, e.entityId, e.phase === 'start' ? e.ts : undefined) : null,
           root,
-          change: (last?.entityId ? rt.inspect(last.entityId).revert?.changes : ins?.revert?.changes) ?? null,
+          change: (last ? rootChange(last.collection, String(last.pk), last.entityId) : ins?.revert?.changes) ?? null,
         };
       });
     } catch (err) {

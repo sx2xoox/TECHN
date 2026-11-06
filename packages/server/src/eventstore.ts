@@ -24,7 +24,22 @@ export class EventStore {
       );
       create index if not exists events_ts on events(ts);
       create index if not exists events_row on events(collection, pk, ts);
+      create table if not exists incidents (id text primary key, opened_at integer not null, body text not null);
     `);
+  }
+
+  /** 장애 기록(사건과 달리 오래 남긴다: 최근 keep 건) */
+  saveIncident(inc: { id: string; openedAt: number }, keep = 500): void {
+    this.db.prepare('insert or replace into incidents (id, opened_at, body) values (?, ?, ?)').run(inc.id, inc.openedAt, JSON.stringify(inc));
+    this.db.prepare('delete from incidents where id not in (select id from incidents order by opened_at desc limit ?)').run(keep);
+  }
+
+  deleteIncident(id: string): void {
+    this.db.prepare('delete from incidents where id = ?').run(id);
+  }
+
+  loadIncidents<T>(limit = 500): T[] {
+    return (this.db.prepare('select body from incidents order by opened_at desc limit ?').all(limit) as { body: string }[]).map((r) => JSON.parse(r.body) as T);
   }
 
   /** 한 틱의 결과를 기록한다. 첫 틱과 N틱마다 키프레임. */

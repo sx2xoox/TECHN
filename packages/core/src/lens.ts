@@ -124,9 +124,11 @@ export function decodeChannel(b: Binding, target: VisualValue, field: FieldSchem
 
 /* ───────────────────────────────── get ───────────────────────────────── */
 
+/** localeCompare(…, 'en', { numeric: true }) 와 같은 순서. 호출마다 정렬기를 새로 만들지 않도록 하나를 둔다(큰 세계에서 관측 시간의 1/4 이 여기였다) */
+const PK_ORDER = new Intl.Collator('en', { numeric: true });
 function comparePk(a: Pk, b: Pk): number {
   if (typeof a === 'number' && typeof b === 'number') return a - b;
-  return String(a).localeCompare(String(b), 'en', { numeric: true });
+  return PK_ORDER.compare(String(a), String(b));
 }
 
 function isShown(kind: EntityKind, row: Row, snapshot: Snapshot, ctxFor: ReturnType<typeof buildContextFactory>): boolean {

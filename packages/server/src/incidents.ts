@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { ActionRecord, Incident, IncidentStep } from '@isomorph/core';
+import type { ActionRecord, Incident, IncidentStep, WorldState } from '@isomorph/core';
 import type { IsomorphRuntime, ViolationEvent } from './runtime.ts';
 
 /**
@@ -13,15 +13,43 @@ import type { IsomorphRuntime, ViolationEvent } from './runtime.ts';
  *  - 조치: 장애가 열려 있는 동안 그 장애의 개체에 한 행동(실행·확인·실패·되돌림)을 남긴다.
  *  - 메모리에만 둔다(최근 100건). 민감 값은 담지 않는다: 제목·위치·진단(가려진 것)·명령만.
  */
-const MAX = 100;
+const MAX = 500;
 
 export class IncidentBook {
   private list: Incident[] = [];
   private actionStatus = new Map<string, string>();
+  /** 바뀐 장애(저장할 것) */
+  private touched = new Set<Incident>();
+  /** 다시 시작할 때 저장소에서 이어받은, 아직 열린 장애 */
+  private resumed: Set<string>;
 
   constructor(private rt: IsomorphRuntime) {
+    // 저장소(storePath)가 파일이면 다시 시작해도 기록이 이어진다
+    this.list = rt.store.loadIncidents<Incident>(MAX);
+    this.resumed = new Set(this.list.filter((i) => i.closedAt === null).map((i) => i.id));
     rt.on('violation', (e: ViolationEvent) => this.onViolation(e));
     rt.on('actions', (actions: ActionRecord[]) => this.onActions(actions));
+    // 늦게 드러난 사슬로 합치기는 관측마다 한 번만(위반마다 하면 장애가 몰릴 때 제곱으로 느려진다)
+    rt.on('world', (w: WorldState) => {
+      if (this.resumed.size) this.reconcile(w);
+      this.mergeLate();
+    });
+  }
+
+  /** 다시 시작한 뒤 첫 관측: 이어받은 장애 중 그 사이 풀린 위반은 닫는다(정확한 시각은 모른다) */
+  private reconcile(w: WorldState) {
+    const active = new Set(w.violations.map((v) => `${v.invariantId}:${String(v.pk)}`));
+    for (const inc of this.list.filter((i) => this.resumed.has(i.id) && i.closedAt === null)) {
+      inc.timeline.push({ at: w.ts, kind: 'note', text: 'ISOMORPH 가 다시 시작해 기록을 이어서 봅니다', entityId: null });
+      for (const x of inc.violations.filter((y) => y.end === null && !active.has(y.key))) {
+        x.end = w.ts;
+        inc.timeline.push({ at: w.ts, kind: 'end', text: `회복(ISOMORPH 가 멈춘 사이 — 정확한 시각 모름): ${x.label} — ${x.title}`, entityId: x.entityId });
+      }
+      if (inc.violations.every((y) => y.end !== null)) inc.closedAt = w.ts;
+      this.touched.add(inc);
+      this.dirty = true;
+    }
+    this.resumed.clear();
   }
 
   all(): Incident[] {
@@ -37,19 +65,22 @@ export class IncidentBook {
   }
 
   private changed() {
+    for (const inc of this.touched) if (this.list.includes(inc)) this.rt.store.saveIncident(inc, MAX);
+    this.touched.clear();
     this.rt.emit('incidents', this.list);
   }
 
-  /** 근본 원인(사슬의 끝, 없으면 자기 자신) */
-  private rootOf(collection: string, pk: string, entityId: string | null, fallbackTitle: string): Incident['root'] & { key: string } {
-    const ins = entityId ? this.rt.inspect(entityId) : null;
+  /** 행 하나를 살펴본다(세계에 그려지지 않은 행도) */
+  private look(collection: string, pk: string, entityId: string | null) {
+    const id = entityId ?? this.rt.inspectId(collection, pk);
+    return id ? this.rt.inspect(id) : null;
+  }
+
+  /** 근본 원인(사슬의 끝, 없으면 자기 자신) — 이미 살펴본 결과에서 */
+  private rootFrom(ins: ReturnType<IncidentBook['look']>, collection: string, pk: string, entityId: string | null, fallbackTitle: string): Incident['root'] & { key: string } {
     const last = ins?.chain?.at(-1);
     if (last) return { key: `${last.collection}:${String(last.pk)}`, collection: last.collection, pk: String(last.pk), entityId: last.entityId, label: last.label, violation: last.violation, crossSystem: !!ins!.chain!.some((s) => s.crossSystem) };
     return { key: `${collection}:${pk}`, collection, pk, entityId, label: ins?.entity?.label ?? `${collection} #${pk}`, violation: ins?.violations[0]?.title ?? fallbackTitle, crossSystem: false };
-  }
-
-  private changeOf(entityId: string | null) {
-    return entityId ? this.rt.inspect(entityId).revert?.changes ?? null : null;
   }
 
   private onViolation(e: ViolationEvent) {
@@ -57,21 +88,24 @@ export class IncidentBook {
     const key = `${v.invariantId}:${String(v.pk)}`;
     if (e.phase === 'start') {
       if (v.proposed && v.severity !== 'critical') return; // 확정 안 된 '추정' 법칙은 장애로 치지 않는다
-      const ins = e.entityId ? this.rt.inspect(e.entityId) : null;
-      const root = this.rootOf(v.collection, String(v.pk), e.entityId, v.title);
+      // 이미 기록 중인 위반(다시 시작한 뒤 이어받은 것 등)은 새로 열지 않는다
+      if (this.open().some((i) => i.violations.some((x) => x.key === key && x.end === null))) return;
+      const ins = this.look(v.collection, String(v.pk), e.entityId); // 위반 하나에 살펴보기 한 번
+      const root = this.rootFrom(ins, v.collection, String(v.pk), e.entityId, v.title);
       let inc = this.open().find((i) => i.rootKey === root.key || i.violations.some((x) => `${x.collection}:${x.pk}` === root.key));
       if (!inc) {
-        inc = { id: randomUUID(), ...(e.initial ? { observedFromStart: true } : {}), openedAt: e.ts, closedAt: null, rootKey: root.key, root: { ...root }, change: this.changeOf(root.entityId), violations: [], actions: [], timeline: [] };
+        // 직전 변경은 장애를 열 때 한 번만: 근본 원인이 자기 자신이면 이미 살펴본 결과에서
+        const change = root.key === `${v.collection}:${String(v.pk)}` ? ins?.revert?.changes ?? null : this.look(root.collection, root.pk, root.entityId)?.revert?.changes ?? null;
+        inc = { id: randomUUID(), ...(e.initial ? { observedFromStart: true } : {}), openedAt: e.ts, closedAt: null, rootKey: root.key, root: { ...root }, change, violations: [], actions: [], timeline: [] };
         delete (inc.root as { key?: string }).key;
         this.list.unshift(inc);
         if (this.list.length > MAX) this.list.pop();
       }
-      if (!inc.change) inc.change = this.changeOf(inc.root.entityId);
       const label = ins?.entity?.label ?? `${v.collection} #${String(v.pk)}`;
       inc.violations.push({ key, title: v.title, severity: v.severity, collection: v.collection, pk: String(v.pk), entityId: e.entityId, label, start: e.ts, end: null, diagnosis: ins?.diagnosis && ins.diagnosis.pattern !== 'unknown' ? `${ins.diagnosis.title}: ${ins.diagnosis.detail}` : null });
       inc.timeline.push({ at: e.ts, kind: 'start', text: `법칙 위반 시작: ${label} — ${v.title}`, entityId: e.entityId });
-      this.mergeLate();
-      this.changed();
+      this.touched.add(inc);
+      this.dirty = true;
       return;
     }
     // 풀림
@@ -84,18 +118,25 @@ export class IncidentBook {
       inc.closedAt = e.ts;
       this.rt.emit('incident-closed', inc);
     }
-    this.changed();
+    this.touched.add(inc);
+    this.dirty = true;
   }
 
-  /** 늦게 드러난 사슬: 스스로를 근본 원인으로 삼았던 장애가 실은 다른 열린 장애의 근본 원인에서 번진 것이면 합친다 */
+  private dirty = false;
+
+  /**
+   * 늦게 드러난 사슬: 스스로를 근본 원인으로 삼았던 장애가 실은 다른 열린 장애의 근본 원인에서 번진 것이면 합친다.
+   * 관측마다 한 번, 최근 2분 안에 열린 장애만 다시 본다(사슬은 보통 몇 초 안에 드러난다).
+   */
   private mergeLate(): void {
+    const now = Date.now();
     const open = this.open();
-    for (const inc of open) {
+    for (const inc of open.filter((i) => now - i.openedAt < 120_000 && !i.observedFromStart).slice(0, 50)) {
       const r = inc.root;
-      if (!r.entityId) continue;
-      const now = this.rootOf(r.collection, r.pk, r.entityId, r.violation);
-      if (now.key === inc.rootKey) continue;
-      const target = open.find((o) => o !== inc && (o.rootKey === now.key || o.violations.some((x) => `${x.collection}:${x.pk}` === now.key)));
+      if (`${r.collection}:${r.pk}` !== inc.rootKey) continue;
+      const again = this.rootFrom(this.look(r.collection, r.pk, r.entityId), r.collection, r.pk, r.entityId, r.violation);
+      if (again.key === inc.rootKey) continue;
+      const target = open.find((o) => o !== inc && this.list.includes(o) && (o.rootKey === again.key || o.violations.some((x) => `${x.collection}:${x.pk}` === again.key)));
       if (!target) continue;
       target.violations.push(...inc.violations);
       target.actions.push(...inc.actions);
@@ -103,7 +144,13 @@ export class IncidentBook {
       target.timeline.sort((a, b) => a.at - b.at);
       target.openedAt = Math.min(target.openedAt, inc.openedAt);
       this.list = this.list.filter((x) => x !== inc);
-      return this.mergeLate();
+      this.rt.store.deleteIncident(inc.id);
+      this.touched.add(target);
+      this.dirty = true;
+    }
+    if (this.dirty) {
+      this.dirty = false;
+      this.changed();
     }
   }
 
@@ -114,11 +161,12 @@ export class IncidentBook {
       this.actionStatus.set(a.id, a.status);
       const inc = this.list.find((i) => (i.closedAt === null || a.ts <= i.closedAt + 60_000) && a.ts >= i.openedAt && (i.violations.some((x) => x.entityId === a.entityId) || i.root.entityId === a.entityId));
       if (!inc) continue;
+      this.touched.add(inc);
       const known = inc.actions.find((x) => x.id === a.id);
       if (known) known.status = a.status;
       else inc.actions.push({ id: a.id, at: a.ts, title: a.title, entityId: a.entityId, commandText: a.commandText, status: a.status });
       const kind: IncidentStep['kind'] = a.status === 'verified' ? 'verified' : a.status === 'failed' || a.status === 'mismatch' ? 'failed' : a.status === 'undone' ? 'undone' : 'action';
-      const text = { action: `조치(승인 후 실행): ${a.title}`, verified: `관측으로 확인됨: ${a.title}`, failed: `조치 실패: ${a.title}${a.error ? ` — ${a.error}` : ''}`, undone: `조치를 되돌림: ${a.title}`, start: '', end: '' }[kind];
+      const text = { action: `조치(승인 후 실행): ${a.title}`, verified: `관측으로 확인됨: ${a.title}`, failed: `조치 실패: ${a.title}${a.error ? ` — ${a.error}` : ''}`, undone: `조치를 되돌림: ${a.title}`, start: '', end: '', note: '' }[kind];
       inc.timeline.push({ at: kind === 'action' ? a.ts : Date.now(), kind, text, entityId: a.entityId });
       dirty = true;
     }

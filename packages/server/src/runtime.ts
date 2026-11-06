@@ -29,6 +29,7 @@ import {
   type SimulationResult,
   type SystemModel,
   type ActionRecord,
+  type ChangeEvent,
   type Affordance,
   type AffordanceOption,
   type AssetManifest,
@@ -420,7 +421,32 @@ export class IsomorphRuntime extends EventEmitter {
   inspect(entityIdValue: string, atTs?: number): InspectMessage {
     const snap = this.snapshotFor(atTs);
     if (!snap || !this.grammar) return { type: 'inspect', entityId: entityIdValue, entity: null, collection: '', pk: '', row: null, fields: [], violations: [], causes: [], diagnosis: null, affordances: [], related: [] };
-    return buildInspect({ snapshot: this.withOutside(snap), grammar: this.grammar, schema: this.schema, events: this.store.eventsBetween(snap.ts - 10 * 60_000, snap.ts), entityId: entityIdValue, writeMode: this.writeMode, history: atTs !== undefined });
+    const live = atTs === undefined && snap === this.lastSnapshot;
+    return buildInspect({
+      snapshot: this.withOutside(snap),
+      grammar: this.grammar,
+      schema: this.schema,
+      // 실시간이면 이번 관측의 사건 창과 세계를 한 번만 만들어 함께 쓴다(장애 때 살펴보기가 몰려도 매번 SQLite 를 다시 읽지 않게)
+      events: live ? this.liveEvents(snap.ts) : this.store.eventsBetween(snap.ts - 10 * 60_000, snap.ts),
+      ...(live && this.world ? { world: this.world } : {}),
+      entityId: entityIdValue,
+      writeMode: this.writeMode,
+      history: atTs !== undefined,
+    });
+  }
+
+  private eventsCache: { ts: number; events: ChangeEvent[] } | null = null;
+  private liveEvents(ts: number): ChangeEvent[] {
+    if (this.eventsCache?.ts !== ts) this.eventsCache = { ts, events: this.store.eventsBetween(ts - 10 * 60_000, ts) };
+    return this.eventsCache.events;
+  }
+
+  /**
+   * 행 하나를 살펴볼 수 있는 id(세계에 그려지지 않은 행도: 종류별 개체 수 제한 밖이어도 진단·장애 묶기는 해야 한다)
+   */
+  inspectId(collection: string, pk: unknown): string | null {
+    const k = this.grammar?.kinds.find((x) => x.collection === collection && x.archetype !== 'npc') ?? this.grammar?.kinds.find((x) => x.collection === collection);
+    return k ? `${k.id}:${String(pk)}` : null;
   }
 
   /** 드라이런: 아무것도 바꾸지 않고, 바뀔 미래의 장면을 계산한다. */

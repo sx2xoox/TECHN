@@ -11,7 +11,17 @@ import { findCollection, pkOf, type Snapshot, type SystemSchema } from './schema
  * 개체 하나를 살펴보기: 원본 행(민감 필드 가림) ↔ 세계 표현, 법칙 위반, 위반 직전 사건, 원인 진단, 할 수 있는 행동.
  * 서버(실시간)와 브라우저(공유용 스냅숏)가 같은 함수를 쓴다.
  */
-export function buildInspect(opts: { snapshot: Snapshot; grammar: WorldGrammar; schema: SystemSchema; events: ChangeEvent[]; entityId: string; writeMode: WriteMode; history: boolean }): InspectMessage {
+export function buildInspect(opts: {
+  snapshot: Snapshot;
+  grammar: WorldGrammar;
+  schema: SystemSchema;
+  events: ChangeEvent[];
+  entityId: string;
+  writeMode: WriteMode;
+  history: boolean;
+  /** 이 스냅숏으로 이미 계산한 세계가 있으면 다시 계산하지 않는다(실시간 살펴보기) */
+  world?: ReturnType<typeof observe>;
+}): InspectMessage {
   const { snapshot: snap, grammar, schema, entityId } = opts;
   const parsed = parseEntityId(entityId);
   const kind = parsed ? kindById(grammar, parsed.kind) : undefined;
@@ -19,7 +29,7 @@ export function buildInspect(opts: { snapshot: Snapshot; grammar: WorldGrammar; 
   if (!kind || !parsed) return empty;
   const col = findCollection(schema, kind.collection);
   if (!col) return empty;
-  const world = observe(snap, grammar, schema);
+  const world = opts.world ?? observe(snap, grammar, schema);
   const entity = world.entities.find((e) => e.id === entityId) ?? null;
   const row = (snap.collections[kind.collection] ?? []).find((r) => String(pkOf(r, col)) === parsed.pk) ?? null;
   const masked = row ? maskRow(row, col) : null;

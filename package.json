@@ -31,7 +31,8 @@
     "study:analyze": "tsx scripts/study-analyze.ts",
     "study:selftest": "tsx scripts/study-selftest.ts",
     "study:power": "tsx scripts/study-power.ts",
-    "e2e:stack": "tsx scripts/stack-e2e.ts"
+    "e2e:stack": "tsx scripts/stack-e2e.ts",
+    "bench:scale": "tsx scripts/bench-scale.ts"
   },
   "engines": {
     "node": ">=22.13"
