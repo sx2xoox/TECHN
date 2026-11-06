@@ -77,6 +77,13 @@ export interface RuntimeOptions {
    * 그 전에 풀린 위반은 '잠깐 튐' 으로만 센다(blips). 기본 0 = 바로.
    */
   confirmMs?: number;
+  /**
+   * 확인 시간을 재는 창: 지난 이만큼(ms) 동안 위반이었던 시간의 합이 confirmMs 에 이르면 확인한다.
+   * 켜졌다 꺼졌다 하는 위반도 쌓인다(두 관측 사이 구간은 양 끝 모두 위반이면 전부, 한쪽이면 절반). 기본 = confirmMs(이어진 위반만)
+   */
+  confirmWindowMs?: number;
+  /** 확인된 위반은 이만큼(ms) 풀려 있어야 끝난 것으로 본다(켜졌다 꺼졌다 할 때 알림이 되풀이되지 않게). 기본 0 */
+  resolveMs?: number;
   storePath?: string;
   numRuns?: number;
   assets?: AssetManifest | null;
@@ -148,9 +155,12 @@ export class IsomorphRuntime extends EventEmitter {
   private markers: TimelineMarker[] = [];
   private activeViolations = new Map<string, Violation>();
   private trackedOnce = false;
-  /** 위반이 처음 보인 시각, 확인되어 알린 위반, 첫 관측에서 이미 깨져 있던 위반 */
-  private firstSeen = new Map<string, number>();
+  /** 최근 관측 시각들, 위반마다 보였던 관측 시각, 확인되어 알린 위반, 알린 뒤 풀리기 시작한 시각, 마지막으로 본 위반, 첫 관측에서 이미 깨져 있던 위반 */
+  private obsTimes: number[] = [];
+  private presence = new Map<string, number[]>();
   private announced = new Set<string>();
+  private absentSince = new Map<string, number>();
+  private lastSeen = new Map<string, Violation>();
   private initialKeys = new Set<string>();
   /** 확인 시간 전에 저절로 풀린 위반 수(알리지 않은 것) */
   blips = 0;
@@ -352,39 +362,78 @@ export class IsomorphRuntime extends EventEmitter {
   }
 
   private trackMarkers(world: WorldState) {
+    const ts = world.ts;
+    const confirm = this.opts.confirmMs ?? 0;
+    const window = Math.max(this.opts.confirmWindowMs ?? confirm, confirm);
+    const resolve = this.opts.resolveMs ?? 0;
+    const idsOf = (v: Violation) => world.entities.filter((e) => e.source.collection === v.collection && String(e.source.pk) === String(v.pk)).map((e) => e.id);
+    this.obsTimes.push(ts);
+    while (this.obsTimes.length > 2 && this.obsTimes[1] <= ts - window) this.obsTimes.shift();
+    /** 지난 창 안에서 위반이었던 시간: 두 관측 사이 구간을 양 끝 모두 위반이면 전부, 한쪽이면 절반(관측이 끊긴 긴 구간은 1분까지만) */
+    const violatingMs = (seen: number[]) => {
+      const at = new Set(seen);
+      let sum = 0;
+      for (let i = 1; i < this.obsTimes.length; i++) {
+        const a = this.obsTimes[i - 1];
+        const b = this.obsTimes[i];
+        if (b <= ts - window) continue;
+        sum += (Math.min(b - a, 60_000) * ((at.has(a) ? 1 : 0) + (at.has(b) ? 1 : 0))) / 2;
+      }
+      return sum;
+    };
     const now = new Map<string, Violation>();
     for (const v of world.violations) {
       const key = `${v.invariantId}:${String(v.pk)}`;
       now.set(key, v);
-      const ids = () => world.entities.filter((e) => e.source.collection === v.collection && String(e.source.pk) === String(v.pk)).map((e) => e.id);
+      this.lastSeen.set(key, v);
+      this.absentSince.delete(key);
       if (!this.activeViolations.has(key)) {
         // 세계(시간 막대의 표시)에는 바로
-        this.markers.push({ ts: world.ts, invariantId: v.invariantId, title: v.title, entityIds: ids() });
+        this.markers.push({ ts, invariantId: v.invariantId, title: v.title, entityIds: idsOf(v) });
         if (this.markers.length > 300) this.markers.shift();
-        this.firstSeen.set(key, world.ts);
         if (!this.trackedOnce) this.initialKeys.add(key);
       }
-      // 장애 기록·알림은 확인 시간만큼 이어진 뒤에
-      const since = this.firstSeen.get(key) ?? world.ts;
-      if (!this.announced.has(key) && world.ts - since >= (this.opts.confirmMs ?? 0)) {
-        this.announced.add(key);
-        const entityIds = ids();
-        if (!v.proposed || v.severity === 'critical') this.emit('toast', { level: 'warning', message: `법칙 위반: ${v.title} (${v.collection} #${v.pk})` });
-        this.emit('violation', { phase: 'start', ts: world.ts, violation: v, entityId: entityIds[0] ?? null, initial: this.initialKeys.has(key), ...(world.ts !== since ? { since } : {}) } satisfies ViolationEvent);
-      }
+      const seen = this.presence.get(key) ?? [];
+      seen.push(ts);
+      this.presence.set(key, seen);
     }
-    for (const [key, v] of this.activeViolations) {
+    // 창 밖으로 나간 관측은 잊는다
+    for (const [key, seen] of this.presence) {
+      while (seen.length && seen[0] < (this.obsTimes[0] ?? ts)) seen.shift();
+      if (!seen.length && !this.announced.has(key)) this.presence.delete(key);
+    }
+    // 장애 기록·알림은 위반이었던 시간이 확인 시간에 이른 뒤에
+    for (const [key, v] of now) {
+      if (this.announced.has(key)) continue;
+      const seen = this.presence.get(key)!;
+      if (violatingMs(seen) < confirm) continue;
+      this.announced.add(key);
+      const since = seen[0];
+      const entityIds = idsOf(v);
+      if (!v.proposed || v.severity === 'critical') this.emit('toast', { level: 'warning', message: `법칙 위반: ${v.title} (${v.collection} #${v.pk})` });
+      this.emit('violation', { phase: 'start', ts, violation: v, entityId: entityIds[0] ?? null, initial: this.initialKeys.has(key), ...(ts !== since ? { since } : {}) } satisfies ViolationEvent);
+    }
+    // 풀림: 확인되기 전에 풀린 것은 알리지 않는다(잠깐 튐). 알린 것은 resolveMs 만큼 풀려 있어야 끝
+    for (const key of this.activeViolations.keys()) {
       if (now.has(key)) continue;
-      this.firstSeen.delete(key);
-      this.initialKeys.delete(key);
-      // 확인되기 전에 풀린 위반은 알리지 않는다(잠깐 튐)
-      if (!this.announced.delete(key)) {
+      if (!this.announced.has(key)) {
         this.blips++;
+        this.initialKeys.delete(key);
         continue;
       }
-      const ids = world.entities.filter((e) => e.source.collection === v.collection && String(e.source.pk) === String(v.pk)).map((e) => e.id);
-      this.emit('violation', { phase: 'end', ts: world.ts, violation: v, entityId: ids[0] ?? null, initial: false } satisfies ViolationEvent);
+      if (!this.absentSince.has(key)) this.absentSince.set(key, ts);
     }
+    for (const [key, from] of this.absentSince) {
+      if (ts - from < resolve) continue;
+      const v = this.lastSeen.get(key)!;
+      this.absentSince.delete(key);
+      this.announced.delete(key);
+      this.presence.delete(key);
+      this.initialKeys.delete(key);
+      const ids = idsOf(v);
+      this.emit('violation', { phase: 'end', ts, violation: v, entityId: ids[0] ?? null, initial: false } satisfies ViolationEvent);
+    }
+    for (const key of this.lastSeen.keys()) if (!now.has(key) && !this.announced.has(key) && !this.presence.has(key)) this.lastSeen.delete(key);
     this.activeViolations = now;
     this.trackedOnce = true;
   }

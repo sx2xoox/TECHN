@@ -13,7 +13,7 @@ const schema: SystemSchema = {
   collections: [{ name: 'services', primaryKey: 'id', fields: [{ name: 'id', type: 'string', nullable: false }, { name: 'latency', type: 'number', nullable: false }] }],
 };
 
-function scripted(confirmMs: number) {
+function scripted(confirmMs: number, extra: { confirmWindowMs?: number; resolveMs?: number } = {}) {
   let clock = 1_000_000;
   let latency = 10;
   const adapter = {
@@ -26,7 +26,7 @@ function scripted(confirmMs: number) {
     describe: () => '',
     close: async () => {},
   };
-  const rt = new IsomorphRuntime({ adapter, pollMs: 3_600_000, numRuns: 5, compile: { mode: 'heuristic' }, confirmMs });
+  const rt = new IsomorphRuntime({ adapter, pollMs: 3_600_000, numRuns: 5, compile: { mode: 'heuristic' }, confirmMs, ...extra });
   const events: ViolationEvent[] = [];
   rt.on('violation', (e: ViolationEvent) => events.push(e));
   const step = async (l: number) => {
@@ -85,6 +85,32 @@ describe('confirmation time before opening an incident', () => {
       expect(events[0].since).toBeUndefined();
     } finally {
       await rt.stop();
+    }
+  });
+
+  it('adds up a violation that flaps on and off within the window (but not with the continuous rule)', async () => {
+    const flap = async (step: (l: number) => Promise<void>, n: number) => {
+      for (let i = 0; i < n; i++) await step(i % 2 === 0 ? 500 : 10);
+    };
+    const strict = scripted(60_000);
+    await strict.rt.start();
+    try {
+      await flap(strict.step, 16); // 4분 동안 15초마다 켜졌다 꺼졌다
+      expect(strict.events).toHaveLength(0); // 이어진 위반만 세면 영영 확인되지 않는다
+    } finally {
+      await strict.rt.stop();
+    }
+    const tolerant = scripted(60_000, { confirmWindowMs: 180_000, resolveMs: 60_000 });
+    await tolerant.rt.start();
+    try {
+      await flap(tolerant.step, 16);
+      // 절반씩 켜져 있으니 3분 창에서 60초가 쌓이는 데 약 2분
+      expect(tolerant.events.map((e) => e.phase)).toEqual(['start']); // 풀림 지연 덕분에 끝/시작이 되풀이되지 않는다
+      expect(tolerant.rt.incidents.all()).toHaveLength(1);
+      for (let i = 0; i < 5; i++) await tolerant.step(10); // 1분 넘게 풀려 있으면 끝
+      expect(tolerant.events.map((e) => e.phase)).toEqual(['start', 'end']);
+    } finally {
+      await tolerant.rt.stop();
     }
   });
 });

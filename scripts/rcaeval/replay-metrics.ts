@@ -22,6 +22,9 @@ const suites = (arg('--suites') ?? 're2ss').split(',');
 const POLL_MS = 15_000;
 /** 위반이 이만큼 이어져야 장애 기록을 연다(런타임의 confirmMs) */
 const CONFIRM_MS = Number(process.argv.includes('--confirm') ? process.argv[process.argv.indexOf('--confirm') + 1] : 0) * 1000;
+/** 확인 시간을 재는 창, 풀림 지연(런타임의 confirmWindowMs·resolveMs) */
+const WINDOW_MS = Number(process.argv.includes('--window') ? process.argv[process.argv.indexOf('--window') + 1] : 0) * 1000 || undefined;
+const RESOLVE_MS = Number(process.argv.includes('--resolve') ? process.argv[process.argv.indexOf('--resolve') + 1] : 0) * 1000;
 const HORIZON_MS = 10 * 60_000;
 const SKIP = /workload|time/i;
 
@@ -73,7 +76,7 @@ export async function replayMetricsCase(dir: string): Promise<CaseResult> {
   let clock = m.time[0] * 1000 + 60_000;
   const adapter = new MetricsAdapter({ now: () => clock, ignore: SKIP });
   adapter.ingest(windowMeans(m, clock - 60_000, clock));
-  const rt = new IsomorphRuntime({ adapter, pollMs: 3_600_000, numRuns: 5, compile: { mode: 'heuristic' }, confirmMs: CONFIRM_MS });
+  const rt = new IsomorphRuntime({ adapter, pollMs: 3_600_000, numRuns: 5, compile: { mode: 'heuristic' }, confirmMs: CONFIRM_MS, confirmWindowMs: WINDOW_MS, resolveMs: RESOLVE_MS });
   if ((await rt.start()) !== 'running') throw new Error(`${name}: 세계가 열리지 않음: ${rt.error}`);
   const end = Math.min(m.time.at(-1)! * 1000, inject + HORIZON_MS);
   while (clock < end) {

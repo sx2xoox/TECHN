@@ -15,6 +15,10 @@ export interface IsomorphConfig {
    * 공개 벤치마크(RCAEval)에서 미리 정한 규칙으로 고른 값(평상시 거짓 경보가 시간당 7번 → 1.4번, 근본 원인 정확도는 그대로, 알아채는 데 90초 더)
    */
   confirmSeconds?: number;
+  /** 확인 시간을 재는 창(초): 이 창 안에서 위반이었던 시간의 합으로 확인한다(켜졌다 꺼졌다 하는 위반도 쌓인다) */
+  confirmWindowSeconds?: number;
+  /** 확인된 위반이 이만큼(초) 풀려 있어야 끝난 것으로 본다 */
+  resolveSeconds?: number;
   port?: number;
   host?: string;
   storePath?: string;

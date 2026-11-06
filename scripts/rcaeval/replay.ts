@@ -25,6 +25,9 @@ const limit = Number(arg('--limit') ?? 0);
 const POLL_MS = 15_000;
 /** 위반이 이만큼 이어져야 장애 기록을 연다(런타임의 confirmMs) */
 const CONFIRM_MS = Number(process.argv.includes('--confirm') ? process.argv[process.argv.indexOf('--confirm') + 1] : 0) * 1000;
+/** 확인 시간을 재는 창, 풀림 지연(런타임의 confirmWindowMs·resolveMs) */
+const WINDOW_MS = Number(process.argv.includes('--window') ? process.argv[process.argv.indexOf('--window') + 1] : 0) * 1000 || undefined;
+const RESOLVE_MS = Number(process.argv.includes('--resolve') ? process.argv[process.argv.indexOf('--resolve') + 1] : 0) * 1000;
 const HORIZON_MS = 10 * 60_000;
 
 type Span = [number, number, string, string, string | null, string, string, number | null];
@@ -122,7 +125,7 @@ export async function replayCase(dir: string, adapterOpts: Partial<OtelAdapterOp
     if (batch.length) adapter.ingest(toOtlp(batch) as never);
   };
   const adapter = new OtelAdapter({ port: 0, now: () => clock, ...adapterOpts });
-  const rt = new IsomorphRuntime({ adapter, pollMs: 3_600_000, numRuns: 5, compile: { mode: 'heuristic' }, confirmMs: CONFIRM_MS });
+  const rt = new IsomorphRuntime({ adapter, pollMs: 3_600_000, numRuns: 5, compile: { mode: 'heuristic' }, confirmMs: CONFIRM_MS, confirmWindowMs: WINDOW_MS, resolveMs: RESOLVE_MS });
   feed();
   if ((await rt.start()) !== 'running') throw new Error(`${name}: 세계가 열리지 않음: ${rt.error}`);
   const end = Math.min(spans.at(-1)![0], inject + HORIZON_MS);
