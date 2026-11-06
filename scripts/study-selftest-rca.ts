@@ -41,8 +41,13 @@ try {
     const page = await browser.newPage({ viewport: { width: 1440, height: 860 }, deviceScaleFactor: shotsDir && p === 0 ? 2 : 1 });
     page.on('pageerror', (e: Error) => errors.push(e.message));
     const phase = () => page.evaluate('window.__study?.phase') as Promise<string>;
-    await page.goto(srv.url);
-    await page.waitForFunction("window.__study?.phase === 'consent'");
+    // 서버가 바로 답하는지 먼저 본다(CI 에서 한 번 페이지 'load' 를 30초 넘게 기다린 적이 있다: 다시 나면 어느 쪽이 느린지 남긴다)
+    const t0 = Date.now();
+    const probe = await fetch(srv.url).then((r) => r.status).catch((e) => String(e));
+    if (Date.now() - t0 > 2000 || probe !== 200) console.log(`  (진단) 실험 서버 응답 ${probe}, ${Date.now() - t0}ms`);
+    // 'load'(모든 하위 자원)가 아니라 화면이 실제로 준비된 것(동의 단계)을 기다린다
+    await page.goto(srv.url, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+    await page.waitForFunction("window.__study?.phase === 'consent'", null, { timeout: 60_000 });
     assert((await page.locator('.study-screen').textContent())?.includes('근본 원인'), `봇 ${p}: 동의 화면이 근본 원인 과제를 설명함`);
     await page.getByRole('button', { name: '동의하고 시작' }).click();
     await page.waitForFunction("window.__study.phase === 'background'");
