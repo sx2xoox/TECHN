@@ -15,6 +15,7 @@ import { serve } from './server.ts';
  *   kubernetes: [--context c] [--kubeconfig f] [--namespace n]
  *   대상을 여러 개(종류가 달라도) 주면 한 세계로 묶는다: connect postgres://… otel kubernetes
  *   알림: --notify <웹훅>(또는 ISOMORPH_NOTIFY_URL) [--public-url https://…]
+ *   장애 기록·알림을 여는 확인 시간: --confirm <초>(기본 90, 0 이면 바로)
  *   기록: --store <파일.sqlite>  사건·장애 기록을 파일에 두어 다시 시작해도 이어지게
  * isomorph study   사용자 실험 서버(STUDY_* 환경변수, scripts/study.ts 와 같음)
  * isomorph snapshot <대상|--config x.json> [--observe 20] [--minutes 10] [--out world.html]   공유본(HTML 한 파일) 만들기
@@ -126,6 +127,8 @@ async function main() {
     compile: { mode: config.compile?.mode ?? 'auto', model: llmModel },
     writeMode: config.writeMode ?? 'read-only',
     pollMs: config.pollMs,
+    // 장애 기록·알림은 위반이 이만큼 이어진 뒤에(세계에는 바로). --confirm 0 이면 바로
+    confirmMs: Number(flag('confirm') ?? config.confirmSeconds ?? 90) * 1000,
     // 사건·장애 기록을 파일에 두면 다시 시작해도 이어진다(기본은 메모리)
     storePath: flag('store') ? path.resolve(flag('store')!) : config.storePath,
     numRuns: config.numRuns,

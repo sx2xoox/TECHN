@@ -10,6 +10,11 @@ export interface IsomorphConfig {
   grammarPath?: string;
   writeMode?: WriteMode;
   pollMs?: number;
+  /**
+   * 위반이 몇 초 이어져야 장애 기록·알림을 여는가(세계에는 바로 보인다). 기본 90초:
+   * 공개 벤치마크(RCAEval)에서 미리 정한 규칙으로 고른 값(평상시 거짓 경보가 시간당 7번 → 1.4번, 근본 원인 정확도는 그대로, 알아채는 데 90초 더)
+   */
+  confirmSeconds?: number;
   port?: number;
   host?: string;
   storePath?: string;

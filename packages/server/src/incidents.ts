@@ -102,8 +102,8 @@ export class IncidentBook {
         if (this.list.length > MAX) this.list.pop();
       }
       const label = ins?.entity?.label ?? `${v.collection} #${String(v.pk)}`;
-      inc.violations.push({ key, title: v.title, severity: v.severity, collection: v.collection, pk: String(v.pk), entityId: e.entityId, label, start: e.ts, end: null, diagnosis: ins?.diagnosis && ins.diagnosis.pattern !== 'unknown' ? `${ins.diagnosis.title}: ${ins.diagnosis.detail}` : null });
-      inc.timeline.push({ at: e.ts, kind: 'start', text: `법칙 위반 시작: ${label} — ${v.title}`, entityId: e.entityId });
+      inc.violations.push({ key, title: v.title, severity: v.severity, collection: v.collection, pk: String(v.pk), entityId: e.entityId, label, start: e.since ?? e.ts, end: null, diagnosis: ins?.diagnosis && ins.diagnosis.pattern !== 'unknown' ? `${ins.diagnosis.title}: ${ins.diagnosis.detail}` : null });
+      inc.timeline.push({ at: e.since ?? e.ts, kind: 'start', text: `법칙 위반 시작: ${label} — ${v.title}${e.since ? ` (${Math.round((e.ts - e.since) / 1000)}초 이어져 확인됨)` : ''}`, entityId: e.entityId });
       this.touched.add(inc);
       this.dirty = true;
       return;

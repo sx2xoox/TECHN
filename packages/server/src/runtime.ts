@@ -72,6 +72,11 @@ export interface RuntimeOptions {
   compile?: CompileOptions;
   writeMode?: WriteMode;
   pollMs?: number;
+  /**
+   * 위반이 이만큼(ms) 이어져야 장애 기록·알림을 연다(경보 규칙의 'for'). 세계에는 바로 보인다.
+   * 그 전에 풀린 위반은 '잠깐 튐' 으로만 센다(blips). 기본 0 = 바로.
+   */
+  confirmMs?: number;
   storePath?: string;
   numRuns?: number;
   assets?: AssetManifest | null;
@@ -113,6 +118,8 @@ export interface ViolationEvent {
   entityId: string | null;
   /** 시작한 뒤 첫 관측에서 이미 깨져 있던 것(새로 깨진 것이 아님) */
   initial: boolean;
+  /** 확인 시간(confirmMs)을 쓸 때: 위반이 처음 보인 시각(ts 는 확인된 시각) */
+  since?: number;
 }
 
 /**
@@ -141,6 +148,12 @@ export class IsomorphRuntime extends EventEmitter {
   private markers: TimelineMarker[] = [];
   private activeViolations = new Map<string, Violation>();
   private trackedOnce = false;
+  /** 위반이 처음 보인 시각, 확인되어 알린 위반, 첫 관측에서 이미 깨져 있던 위반 */
+  private firstSeen = new Map<string, number>();
+  private announced = new Set<string>();
+  private initialKeys = new Set<string>();
+  /** 확인 시간 전에 저절로 풀린 위반 수(알리지 않은 것) */
+  blips = 0;
   private log: (msg: string) => void;
   readonly writeMode: WriteMode;
   readonly pollMs: number;
@@ -343,16 +356,32 @@ export class IsomorphRuntime extends EventEmitter {
     for (const v of world.violations) {
       const key = `${v.invariantId}:${String(v.pk)}`;
       now.set(key, v);
+      const ids = () => world.entities.filter((e) => e.source.collection === v.collection && String(e.source.pk) === String(v.pk)).map((e) => e.id);
       if (!this.activeViolations.has(key)) {
-        const ids = world.entities.filter((e) => e.source.collection === v.collection && String(e.source.pk) === String(v.pk)).map((e) => e.id);
-        this.markers.push({ ts: world.ts, invariantId: v.invariantId, title: v.title, entityIds: ids });
+        // 세계(시간 막대의 표시)에는 바로
+        this.markers.push({ ts: world.ts, invariantId: v.invariantId, title: v.title, entityIds: ids() });
         if (this.markers.length > 300) this.markers.shift();
+        this.firstSeen.set(key, world.ts);
+        if (!this.trackedOnce) this.initialKeys.add(key);
+      }
+      // 장애 기록·알림은 확인 시간만큼 이어진 뒤에
+      const since = this.firstSeen.get(key) ?? world.ts;
+      if (!this.announced.has(key) && world.ts - since >= (this.opts.confirmMs ?? 0)) {
+        this.announced.add(key);
+        const entityIds = ids();
         if (!v.proposed || v.severity === 'critical') this.emit('toast', { level: 'warning', message: `법칙 위반: ${v.title} (${v.collection} #${v.pk})` });
-        this.emit('violation', { phase: 'start', ts: world.ts, violation: v, entityId: ids[0] ?? null, initial: !this.trackedOnce } satisfies ViolationEvent);
+        this.emit('violation', { phase: 'start', ts: world.ts, violation: v, entityId: entityIds[0] ?? null, initial: this.initialKeys.has(key), ...(world.ts !== since ? { since } : {}) } satisfies ViolationEvent);
       }
     }
     for (const [key, v] of this.activeViolations) {
       if (now.has(key)) continue;
+      this.firstSeen.delete(key);
+      this.initialKeys.delete(key);
+      // 확인되기 전에 풀린 위반은 알리지 않는다(잠깐 튐)
+      if (!this.announced.delete(key)) {
+        this.blips++;
+        continue;
+      }
       const ids = world.entities.filter((e) => e.source.collection === v.collection && String(e.source.pk) === String(v.pk)).map((e) => e.id);
       this.emit('violation', { phase: 'end', ts: world.ts, violation: v, entityId: ids[0] ?? null, initial: false } satisfies ViolationEvent);
     }
